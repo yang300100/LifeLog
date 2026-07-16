@@ -97,7 +97,7 @@ OUTPUT_DIR = Path(__file__).parent / "e2e_output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # YOLO
-YOLO_MODEL = os.path.expanduser("~/.cache/ultralytics/yolov8n-seg.pt")
+YOLO_MODEL = str(Path(__file__).parent / "yolov8n-seg.pt")
 YOLO_INPUT_SIZE = 640
 YOLO_CONF = 0.25
 YOLO_IOU = 0.45
@@ -248,14 +248,14 @@ class ImagePreprocessor:
     """图像预处理：读取 + 缩放至 640 短边 (YOLO 推理用)"""
 
     @staticmethod
-    def process(image_path: str) -> tuple[np.ndarray, np.ndarray, float, tuple]:
+    def process(image_path: str) -> tuple[np.ndarray, np.ndarray, float, tuple, tuple]:
         """
         Returns:
             img_yolo: 缩放后的 RGB 图像 (用于 YOLO)
             img_orig: 原始 RGB 图像
             scale: 缩放比例
             orig_size: (H, W)
-        """
+            padding: (pad_top, pad_left)
         img = cv2.imread(image_path)
         if img is None:
             raise ValueError(f"无法读取图像: {image_path}")
@@ -263,14 +263,25 @@ class ImagePreprocessor:
         img_orig = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h_orig, w_orig = img_orig.shape[:2]
 
-        # 等比例缩放至短边 640
-        scale = YOLO_INPUT_SIZE / min(h_orig, w_orig)
-        new_h = int(h_orig * scale)
+        # 标准 YOLO letterbox: 长边缩放到 640, 短边补零到正方形
+        scale = YOLO_INPUT_SIZE / max(h_orig, w_orig)
         new_w = int(w_orig * scale)
-        img_yolo = cv2.resize(img_orig, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        new_h = int(h_orig * scale)
+        img_resized = cv2.resize(img_orig, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-        print(f"  📐 图像预处理: {w_orig}x{h_orig} → {new_w}x{new_h} (scale={scale:.3f})")
-        return img_yolo, img_orig, scale, (h_orig, w_orig)
+        # 填充到 640x640 正方形
+        pad_top = (YOLO_INPUT_SIZE - new_h) // 2
+        pad_bottom = YOLO_INPUT_SIZE - new_h - pad_top
+        pad_left = (YOLO_INPUT_SIZE - new_w) // 2
+        pad_right = YOLO_INPUT_SIZE - new_w - pad_left
+
+        img_yolo = cv2.copyMakeBorder(
+            img_resized, pad_top, pad_bottom, pad_left, pad_right,
+            cv2.BORDER_CONSTANT, value=(114, 114, 114)
+        )
+
+        print(f"  \U0001f4d0 图像预处理: {w_orig}x{h_orig} \u2192 {new_w}x{new_h} (scale={scale:.3f}) pad=({pad_top},{pad_bottom},{pad_left},{pad_right})")
+        return img_yolo, img_orig, scale, (h_orig, w_orig), (pad_top, pad_left)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -287,7 +298,7 @@ class YOLOSegmenter:
         self.model = YOLO(model_path, task="segment")
         self.model.to("cpu")  # 桌面端用 CPU
 
-    def segment(self, img: np.ndarray, orig_size: tuple) -> list[DetectedObject]:
+    def segment(self, img: np.ndarray, orig_size: tuple, pad_top: int = 0, pad_left: int = 0) -> list[DetectedObject]:
         """
         Args:
             img: 缩放后的 RGB 图像
@@ -327,13 +338,11 @@ class YOLOSegmenter:
             class_id = classes[i]
             class_name = self.model.names.get(class_id, f"class_{class_id}")
 
-            # 坐标映射回原图
-            scale_x = w_orig / w_yolo
-            scale_y = h_orig / h_yolo
-            x1 = int(xyxy[i][0] * scale_x)
-            y1 = int(xyxy[i][1] * scale_y)
-            x2 = int(xyxy[i][2] * scale_x)
-            y2 = int(xyxy[i][3] * scale_y)
+            # 坐标映射回原图: 先减去 padding, 再反算到原始尺寸
+            x1 = int((xyxy[i][0] - pad_left) / scale)
+            y1 = int((xyxy[i][1] - pad_top) / scale)
+            x2 = int((xyxy[i][2] - pad_left) / scale)
+            y2 = int((xyxy[i][3] - pad_top) / scale)
             cx = (x1 + x2) // 2
             cy = (y1 + y2) // 2
             area = (x2 - x1) * (y2 - y1)
@@ -1058,13 +1067,13 @@ class E2EPipeline:
         # ═══ Step 1: 图像预处理 ═══
         print("\n" + "─" * 50)
         print("📐 Step 1/7: 图像预处理")
-        img_yolo, img_orig, scale, orig_size = ImagePreprocessor.process(self.scene_path)
+        img_yolo, img_orig, scale, orig_size, (pad_top, pad_left) = ImagePreprocessor.process(self.scene_path)
 
         # ═══ Step 2: YOLO 分割 ═══
         print("\n" + "─" * 50)
         print("🤖 Step 2/7: YOLOv8n-seg 实例分割")
         segmenter = YOLOSegmenter()
-        objects = segmenter.segment(img_yolo, orig_size)
+            objects = segmenter.segment(img_yolo, orig_size, pad_top, pad_left)
 
         if not objects:
             print("  ⚠️ 无检测结果 → 回退纯三分法 + 跳过 Kimi")
