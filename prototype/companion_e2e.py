@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 LifeLog Companion — 完整端到端原型
 ════════════════════════════════════════════════
@@ -119,7 +119,7 @@ def analyze_scene(scene_path: str, custom_prompt: str = None) -> dict:
        她应该出现在画面中的什么位置？
        以什么姿态静静陪伴？"
     """
-    prompt_text = custom_prompt or DEFAULT_PROMPTS["scene_analysis"]
+
     if not KIMI_API_KEY:
         print("  [!] 无 Kimi API Key，使用默认分析")
         return {
@@ -212,7 +212,7 @@ def analyze_scene(scene_path: str, custom_prompt: str = None) -> dict:
 # Step ②: 角色描述提取 (Vision Model)
 # ═══════════════════════════════════════════
 
-def describe_character(ref_path: str) -> str:
+def describe_character(ref_path: str, custom_prompt: str = None) -> str:
     """用 Kimi 视觉模型从参考图提取角色文字描述"""
     if not KIMI_API_KEY:
         print("  [!] 无 Kimi API Key")
@@ -348,23 +348,30 @@ def generate_character(
 # ═══════════════════════════════════════════
 
 def chroma_key_remove(image: Image.Image) -> Image.Image:
-    """绿幕色键抠图 → 透明背景 RGBA → 裁剪到角色边界"""
+    """绿幕色键抠图 → 透明背景 RGBA → 裁剪到角色边缘"""
     img = image.convert("RGBA")
-    pix = img.load()
     w, h = img.size
 
-    for y in range(h):
-        for x in range(w):
-            r, g, b, a = pix[x, y]
-            green_dominance = g - max(r, b)
-            if green_dominance > 40:
-                pix[x, y] = (r, g, b, 0)
-            elif green_dominance > 20 and (r + g + b) / 3 > 40:
-                alpha = max(0, min(255, int((40 - green_dominance) / 20 * 255)))
-                pix[x, y] = (r, g, b, min(a, alpha))
+    # 用 numpy 向量化代替逐像素循环，性能提升 >100x
+    arr = np.array(img, dtype=np.float32)       # H x W x 4
+    r, g, b, a = arr[:,:,0], arr[:,:,1], arr[:,:,2], arr[:,:,3]
 
-    # 裁剪到角色边界 (去除四周透明/绿幕空白)
-    bbox = img.getbbox()  # 返回不透明像素的边界框 (left, top, right, bottom)
+    green_dominance = g - np.maximum(r, b)
+    avg = (r + g + b) / 3
+
+    # 强绿色 → 完全透明
+    a[green_dominance > 40] = 0
+
+    # 中等绿色 → 半透明（alpha 降低）
+    moderate = (green_dominance > 20) & (green_dominance <= 40) & (avg > 40)
+    alpha_limit = np.clip((40 - green_dominance[moderate]) / 20 * 255, 0, 255)
+    a[moderate] = np.minimum(a[moderate], alpha_limit)
+
+    arr_out = np.dstack([r, g, b, a]).astype(np.uint8)
+    result = Image.fromarray(arr_out, "RGBA")
+
+    # 裁剪到角色边缘（去除四周透明/绿幕空白）
+    bbox = result.getbbox()
     if bbox:
         # 加一点边距
         pad = 4
@@ -372,16 +379,10 @@ def chroma_key_remove(image: Image.Image) -> Image.Image:
         top = max(0, bbox[1] - pad)
         right = min(w, bbox[2] + pad)
         bottom = min(h, bbox[3] + pad)
-        img = img.crop((left, top, right, bottom))
-        print(f"  裁剪: {w}x{h} → {img.size} (边界: {bbox})")
+        result = result.crop((left, top, right, bottom))
+        print(f"  裁剪: {w}x{h} → {result.size} (边界: {bbox})")
 
-    return img
-
-
-# ═══════════════════════════════════════════
-# Step ⑤: 合成
-# ═══════════════════════════════════════════
-
+    return result
 def find_empty_region(scene_path: str) -> dict:
     """
     扫描场景图，找到最空的区域（颜色方差最小的大块区域）。

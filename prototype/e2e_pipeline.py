@@ -1,4 +1,4 @@
-"""
+﻿"""
 LifeLog Companion — 完整 E2E 管线测试脚本
 
 管线流程:
@@ -404,21 +404,55 @@ class CandidateGenerator:
         self.objects = objects
 
     def build_occupancy_map(self) -> np.ndarray:
-        """构建占用图：障碍物区域 = 1"""
+    def build_occupancy_map(self) -> np.ndarray:
+        """构建占用图：障碍物区域 = 1（含缓冲带扩展）"""
         occupied = np.zeros((self.h, self.w), dtype=np.uint8)
         for obj in self.objects:
             if obj.class_id in OBSTACLE_CLASSES or obj.class_name == "person":
                 occupied[obj.mask > 0] = 1
+        # 扩展占用区域，防止角色太靠近障碍物
+        kernel = np.ones((11, 11), np.uint8)
+        occupied = cv2.dilate(occupied, kernel, iterations=1)
         return occupied
 
     def build_ground_map(self) -> np.ndarray:
-        """构建地面图：可站立区域 = 1 (Y坐标启发式 + 检测到的地面类别)"""
+        """构建地面图：可站立区域 = 1（表面检测 + Y坐标启发式）"""
         ground = np.zeros((self.h, self.w), dtype=np.uint8)
 
-        # 启发式: 画面下半部分可能是地面
-        ground[self.h // 2:, :] = 1
+        # 1. 优先检测水平表面物体（桌面、沙发等）作为可站立区域
+        surface_classes = {60, 57, 15, 56, 58}  # dining table, couch, bench, chair, potted plant
+        surface_found = False
 
-        # 排除已占用区域
+        for obj in self.objects:
+            if obj.class_id in surface_classes:
+                x1, y1, x2, y2 = obj.bbox
+                obj_w = x2 - x1
+                obj_h = y2 - y1
+                # 宽高比 > 1.5 且有足够大小才作为表面
+                if obj_w > obj_h * 1.5 and obj_w * obj_h > (self.w * self.h) * 0.02:
+                    # 物体顶部附近作为可站立区域
+                    top_y = max(0, int(y1 - obj_h * 0.1))
+                    bottom_y = min(self.h, int(y1 + obj_h * 0.4))
+                    ground[top_y:bottom_y, x1:x2] = 1
+                    surface_found = True
+
+        # 2. 如果没有检测到表面，使用 Y 坐标启发式
+        if not surface_found:
+            # 检查是否检测到人物，用人物脚部位置推断地面
+            person_bottom = None
+            for obj in self.objects:
+                if obj.class_id == 0:  # person
+                    _, _, _, y2 = obj.bbox
+                    if person_bottom is None or y2 > person_bottom:
+                        person_bottom = y2
+            if person_bottom is not None:
+                # 人物脚部以下开始作为地面
+                ground[max(0, int(person_bottom - self.h * 0.05)):, :] = 1
+            else:
+                # 默认：画面下方 55% 作为地面（比原来更保守）
+                ground[int(self.h * 0.55):, :] = 1
+
+        # 3. 排除已占用区域（含缓冲带）
         occupied = self.build_occupancy_map()
         ground[occupied > 0] = 0
 

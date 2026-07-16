@@ -1,4 +1,4 @@
-// LifeLog Camera — 随身行为记录摄像头固件
+﻿// LifeLog Camera — 随身行为记录摄像头固件
 //
 // 状态机:
 //   冷启动 → 检测 SD 卡配置文件
@@ -29,6 +29,13 @@ static void enter_deep_sleep() {
     Serial.printf("[SLEEP] 休眠 %u ms (%.1f min)\n",
                   g_cfg.interval, g_cfg.interval / 60000.0f);
 
+    // 防御性检查：如果间隔太短（<10秒），可能是配置单位用错了，回退到60秒
+    uint64_t sleep_us = (uint64_t)g_cfg.interval * 1000;
+    if (sleep_us < 10000000ULL) {
+        Serial.printf("[SLEEP] 休眠间隔 %llu µs 过短，回退到 60 秒\n", sleep_us);
+        sleep_us = 60 * 1000000ULL;
+    }
+
     // 释放摄像头资源再休眠（简化硬件无外部 MOSFET，靠 deinit 降低功耗）
     camera_power_off();
 
@@ -36,7 +43,7 @@ static void enter_deep_sleep() {
     SD_MMC.end();
 
     // 配置唤醒定时器
-    esp_err_t wakeup_err = esp_sleep_enable_timer_wakeup((uint64_t)g_cfg.interval * 1000);
+    esp_err_t wakeup_err = esp_sleep_enable_timer_wakeup(sleep_us);
     if (wakeup_err != ESP_OK) {
         Serial.printf("[SLEEP] 唤醒定时器配置失败: 0x%x，回退到 120 秒\n", wakeup_err);
         esp_err_t fallback_err = esp_sleep_enable_timer_wakeup(120 * 1000000ULL);
@@ -119,12 +126,11 @@ void setup() {
     Serial.printf("       剩余空间: %u MB\n", sd_free_mb());
 
     // 2. 加载配置
-    config_load("/camera.cfg", g_cfg);
-
-    // 3. 检查是否首次启动 (无配置文件 → 自动生成默认配置)
-    FILE *f = fopen("/camera.cfg", "r");
-    if (!f) {
+    // 2. 加载配置（文件不存在时自动使用默认值）
+    if (!config_load("/camera.cfg", g_cfg)) {
+        // 首次启动，自动生成默认配置
         enter_setup_mode();
+    }
     } else {
         fclose(f);
     }
