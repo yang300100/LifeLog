@@ -1,0 +1,27 @@
+{
+  "timestamp": "20260630_160916",
+  "candidates_count": 3,
+  "best_candidate": {
+    "id": 3,
+    "description": "画面右侧下方，44%面积的空地",
+    "coords": [
+      799,
+      960
+    ]
+  },
+  "kimi_selection": {
+    "best_id": 3,
+    "interaction": {
+      "object": "keyboard",
+      "detailed_description": "身体微微侧坐于桌边，右手食指轻轻搭在键盘右侧边缘，左手自然垂落或轻撑桌面，头部向左倾斜约15度，眼睛看向镜头方向，嘴角带着'被抓到偷看'的俏皮笑意，仿佛正在陪用户一起看屏幕上的游戏直播",
+      "pose": "leaning_sideways",
+      "facing": "toward_left",
+      "gaze_target": "camera"
+    },
+    "facing": "toward_left",
+    "light": "from_top_back",
+    "confidence": 0.82
+  },
+  "output_path": "C:\\Users\\14261\\Desktop\\LifeLog\\prototype\\e2e_output\\final_result_20260630_160916.png",
+  "url": "https://ark-acg-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-5-0/02178280698915488db556329240132465f0386a4fcfe598d06ad_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260630%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260630T081040Z&X-Tos-Expires=86400&X-Tos-Signature=2064761db07977b778d65457f303883bc8c186f27a48d1e65325e7ed013500ec&X-Tos-SignedHeaders=host"
+}

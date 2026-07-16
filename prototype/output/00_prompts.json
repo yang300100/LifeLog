@@ -1,0 +1,19 @@
+{
+  "description": "这些是 LifeLog Companion 流程中使用的所有提示词。你可以修改后重新运行。",
+  "prompts": {
+    "scene_analysis": "你是一个温馨的\"虚拟陪伴角色定位助手\"。这张照片来自用户胸前佩戴的摄像头，是第一视角画面。\n\n用户有一个二次元风格的虚拟同伴角色，她像一个安静的同行者，陪伴在用户身边。\n\n你的任务：分析这张照片，**在画面的空白/空闲区域**为这个虚拟同伴找一个最自然的位置。\n\n核心原则：\n- **优先空白区域**：找画面中没有物体遮挡的纯色大块空白区（如空桌面、空墙、空地面、窗外天空等），角色绝对不能覆盖任何现有物体\n- **空间充足**：位置应该有足够的空间容纳一个完整的人物，不能挤在狭缝里\n- **不遮挡主体**：不能挡住显示器、键盘、鼠标等人机交互区域\n- 角色是\"陪伴者\"不是\"参与者\"——安静待在旁边\n- **画面平衡**：角色位置应让整体构图更均衡\n\n请返回严格JSON格式（不要markdown代码块）：\n{{\n  \"scene_type\": \"场景类型(简短中文)\",\n  \"empty_areas\": \"详细描述画面中的空白区域，按面积从大到小列出\",\n  \"lighting\": {{ \"direction\": \"主光源方向\", \"temperature\": \"色温(warm/cool/natural)\", \"description\": \"光源描述\" }},\n  \"recommended_placement\": \"推荐水平位置: left/center/right/corner/nearby\",\n  \"recommended_pose\": \"推荐姿态: standing/sitting_nearby/leaning/crouching/waiting/perched\",\n  \"anchor_point\": \"角色底部与场景的接触位置\",\n  \"vertical_anchor_ratio\": 0.0,\n  \"rationale\": \"为什么选这块空白区域\",\n  \"generation_hint\": \"英文光照融合提示(15词以内)\"\n}}\n\nvertical_anchor_ratio: 0.5=画面中部, 0.7=偏下, 0.85=地面",
+    "character_describe": "请详细描述这张图片中的人物/角色，提取以下视觉特征:\n\n1. 发型与发色\n2. 瞳色\n3. 面部特征\n4. 服装（上衣、下装、鞋）\n5. 身高体型特征\n6. 气质/风格\n7. 特殊配件（眼镜、帽子、饰品等）\n\n请用一段流畅的英文描述，60-100词。直接输出描述文字，不要JSON格式，不要额外解释。",
+    "image_generation": "Keep the exact same character identity, face, hair style, outfit, and art style.\nChange only the pose and expression to: {pose_desc}.\nReplace the entire background with solid chroma key green screen.\nNo environment, no furniture, no ground, no objects — just the character isolated on pure green background, full body,\ngreen screen studio photography, character floating in green void.{scene_hint}"
+  },
+  "last_analysis": {
+    "position_key": "right",
+    "pose_key": "sitting_nearby",
+    "scene_type": "桌面游戏场景",
+    "lighting": "显示器屏幕光为主光源，偏冷白；桌面台灯或环境光为暖黄色，形成冷暖对比",
+    "rationale": "画面右侧显示器外有大面积深色空白墙面，下方延伸至桌面右前方形成完整L型空白区；此处不遮挡显示器游戏画面、不干扰键盘鼠标操作区，与左侧耳机支架形成左右视觉平衡；角色坐于桌面边缘呈现安静陪伴姿态，符合'同行者'定位",
+    "generation_hint": "warm desk lamp from left, screen glow on face, cozy gaming night",
+    "spatial_analysis": "",
+    "vertical_anchor_ratio": 0.82,
+    "anchor_point": "桌面右前方边缘，鼠标垫旁边"
+  }
+}

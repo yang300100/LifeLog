@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 手机拍摄的临时视频存放在 cache 目录 -->
+    <cache-path name="captured_videos" path="/" />
+    <!-- 视频文件存储在 files/videos 目录 -->
+    <files-path name="saved_videos" path="videos/" />
+</paths>

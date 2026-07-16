@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "skills": {
+    "agent-experience": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/agent-experience/SKILL.md",
+      "computedHash": "df0b20dd6f8ee31c22ee5051483f03cf38509e85d50a3fadb808525c35e718d6"
+    },
+    "autobrowse": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/autobrowse/SKILL.md",
+      "computedHash": "22b03ac120c27bd340fea918df67bf8db77ed24c1f5f3292a48b42299a4f9425"
+    },
+    "browser": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/browser/SKILL.md",
+      "computedHash": "21456d0f05d48a33236556de5055f167a68a891a1fbd0c90afeb1e51d6827662"
+    },
+    "browser-to-api": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/browser-to-api/SKILL.md",
+      "computedHash": "aacbce7f6a66bfa2fa25e5f1d4bce375eb2c640103d477afe07ef23bbae40424"
+    },
+    "browser-trace": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/browser-trace/SKILL.md",
+      "computedHash": "a49568a18e931b3587a4cce9b234a44427fbe325578bd7124ad149010e1b70ca"
+    },
+    "browser-use-to-stagehand": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/browser-use-to-stagehand/SKILL.md",
+      "computedHash": "0e2efd87342fd69dbdf6d178a1a5963fc914a9945a85a4a6a9f24b6463bbb334"
+    },
+    "browserbase-cli": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/browserbase-cli/SKILL.md",
+      "computedHash": "9076df51604bf5834c61ee58c3d01edb283ea78ee889b6a59108acb8e81b9299"
+    },
+    "company-research": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/company-research/SKILL.md",
+      "computedHash": "02e9b89521b07dc559c62f96a18874440be656962270ccd179741b8c5f9ddda2"
+    },
+    "competitor-analysis": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/competitor-analysis/SKILL.md",
+      "computedHash": "50ba860ae10d8e88632230751665ebc7e373e8706a9177b77dd80ba58fa88ddd"
+    },
+    "cookie-sync": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/cookie-sync/SKILL.md",
+      "computedHash": "a68295a6c79ab44bdc350aa6a72b1f6e1a608e8a5187ff85be01ae7b2a2ec0f4"
+    },
+    "event-prospecting": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/event-prospecting/SKILL.md",
+      "computedHash": "31e1e1d5db89a92742a3e9b0e502c644e93f9b707bead9d573e7bc3358d8e812"
+    },
+    "fetch": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/fetch/SKILL.md",
+      "computedHash": "c16b8fceac3bcc088837c9c684a05cf8d2481588f1b4aee1ea36c9689ad386cc"
+    },
+    "functions": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/functions/SKILL.md",
+      "computedHash": "43c10ad21a05f69078968095f7267b719dce4d7325cb1a6e9905ca64efebd2fa"
+    },
+    "safe-browser": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/safe-browser/SKILL.md",
+      "computedHash": "7ff430fdda903aee276ae70ada13399d7654f9b5b53bc29e6671cc35299582dd"
+    },
+    "search": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/search/SKILL.md",
+      "computedHash": "2e8a0754587f02dcbcd0bab77ccf87c4b64d3e5e9762565868ec02a9673dc045"
+    },
+    "ui-test": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/ui-test/SKILL.md",
+      "computedHash": "d881ae3b0140ba5d1bb0155a1fe818b6ff2acfd76637e2f0f38913a8e66b469a"
+    },
+    "webmcp-gen": {
+      "source": "browserbase/skills",
+      "sourceType": "github",
+      "skillPath": "skills/webmcp-gen/SKILL.md",
+      "computedHash": "96e75248b7a11b5e3a49aef3d8d6ae9348170c71cca6c627941242f32c2d233e"
+    }
+  }
+}

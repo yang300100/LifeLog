@@ -1,0 +1,41 @@
+{
+  "evaluations": [],
+  "best_candidate_id": 2,
+  "selected_interaction": {},
+  "person_facing": "toward_camera",
+  "light_direction": "",
+  "confidence": 0.5,
+  "warnings": [],
+  "candidates": [
+    {
+      "id": 1,
+      "description": "画面中央偏下，44%面积的空地",
+      "coords": [
+        548,
+        1049
+      ],
+      "nearby": [],
+      "score": 0.353
+    },
+    {
+      "id": 2,
+      "description": "画面中央偏下，44%面积的空地",
+      "coords": [
+        399,
+        960
+      ],
+      "nearby": [],
+      "score": 0.394
+    },
+    {
+      "id": 3,
+      "description": "画面右侧下方，44%面积的空地",
+      "coords": [
+        799,
+        960
+      ],
+      "nearby": [],
+      "score": 0.394
+    }
+  ]
+}

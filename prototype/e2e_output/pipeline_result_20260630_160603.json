@@ -1,0 +1,21 @@
+{
+  "timestamp": "20260630_160603",
+  "candidates_count": 3,
+  "best_candidate": {
+    "id": 1,
+    "description": "画面中央偏下，44%面积的空地",
+    "coords": [
+      548,
+      1049
+    ]
+  },
+  "kimi_selection": {
+    "best_id": 1,
+    "interaction": {},
+    "facing": "toward_camera",
+    "light": "",
+    "confidence": 0.3
+  },
+  "output_path": "C:\\Users\\14261\\Desktop\\LifeLog\\prototype\\e2e_output\\final_result_20260630_160603.png",
+  "url": "https://ark-acg-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-5-0/0217828068063634d1a7bd4cdfcf1811296cf68db8d43d8ea4be6_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260630%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260630T080726Z&X-Tos-Expires=86400&X-Tos-Signature=ba978c4ca48b5b77e53c05649d097c76e3e9880ad07dcda9be7d97512811d748&X-Tos-SignedHeaders=host"
+}
