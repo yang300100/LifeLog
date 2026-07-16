@@ -24,7 +24,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Tuple, Dict
+from typing import Optional, Dict
 
 if sys.platform == "win32":
     try:
@@ -39,7 +39,7 @@ except ImportError:
     print("[x] pip install requests"); sys.exit(1)
 
 try:
-    from PIL import Image, ImageDraw, ImageEnhance, ImageStat, ImageOps
+from PIL import Image, ImageDraw, ImageStat, ImageOps
 except ImportError:
     print("[x] pip install Pillow"); sys.exit(1)
 

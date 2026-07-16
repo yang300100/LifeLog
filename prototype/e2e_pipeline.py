@@ -27,8 +27,8 @@ import base64
 import math
 import argparse
 from pathlib import Path
-from urllib.request import urlretrieve
-from dataclasses import dataclass, field, asdict
+
+from dataclasses import dataclass, field
 from typing import Optional
 
 # 修复 Windows GBK 终端
@@ -150,11 +150,7 @@ INTERACTABLE_CLASSES = {
     77: {"name": "teddy bear", "action": "开心地看向{位置}的泰迪熊"},
 }
 
-# 地面类别 (可站立)
-GROUND_CLASSES = {
-    0: "road",        # 道路 (COCO 里没有专门的 road, 用 0 占位)
-    9: "grass",       # 没有；COCO 不区分地面
-}
+
 
 # 实际上 COCO 没有地面类，我们依赖 Y 坐标启发式
 # 但在室内场景，检测到 floor 类会很有用
