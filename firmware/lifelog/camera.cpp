@@ -82,18 +82,24 @@ int camera_capture_video(const char *filepath,
     camera_fb_t *discard = esp_camera_fb_get();
     if (discard) esp_camera_fb_return(discard);
     delay(120);  // 等传感器 AEC/AWB 收敛
-    camera_fb_t *test_fb = esp_camera_fb_get();
-    if (test_fb) {
-        if (test_fb->len < g_cfg.flash_threshold) {
-            gpio_set_level(GPIO_NUM_4, 1);
-            flash_on = true;
-            Serial.printf("[CAM] 暗光检测 (JPEG=%u < %u)，开启闪光灯\n",
-                          test_fb->len, g_cfg.flash_threshold);
-        } else {
-            Serial.printf("[CAM] 光线充足 (JPEG=%u >= %u)，不开启闪光灯\n",
-                          test_fb->len, g_cfg.flash_threshold);
+    // 取两帧样本，用较大者判光 —— 避免单帧瞬时波动误触发
+    size_t max_len = 0;
+    for (int s = 0; s < 2; s++) {
+        camera_fb_t *test = esp_camera_fb_get();
+        if (test) {
+            if (test->len > max_len) max_len = test->len;
+            esp_camera_fb_return(test);
+            if (s == 0) delay(80);
         }
-        esp_camera_fb_return(test_fb);
+    }
+    if (max_len > 0 && max_len < g_cfg.flash_threshold) {
+        gpio_set_level(GPIO_NUM_4, 1);
+        flash_on = true;
+        Serial.printf("[CAM] 暗光检测 (max_JPEG=%u < %u)，开启闪光灯\n",
+                      max_len, g_cfg.flash_threshold);
+    } else if (max_len > 0) {
+        Serial.printf("[CAM] 光线充足 (max_JPEG=%u >= %u)\n",
+                      max_len, g_cfg.flash_threshold);
     }
     if (flash_on) delay(80);  // LED 点亮后给传感器一瞬调整曝光
 #endif
