@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include "camera.h"
 #include "camera_pins.h"
 #include "config.h"
@@ -117,13 +118,29 @@ int camera_capture_video(const char *filepath,
         }
 
         // 定期喂看门狗（录制超过 3 秒时需要）
+        // 注：仅当当前任务已订阅 TWDT 时才喂，避免 "task not found" 错误日志
         if (frame_count % 10 == 0) {
-            esp_task_wdt_reset();
+            if (esp_task_wdt_status(NULL) == ESP_OK) {
+                esp_task_wdt_reset();
+            }
         }
     }
 
     fclose(f);
     return frame_count;
+}
+
+const char* camera_framesize_name(uint8_t fs) {
+    switch (fs) {
+        case FRAMESIZE_QVGA: return "QVGA(320x240)";
+        case FRAMESIZE_VGA:  return "VGA(640x480)";
+        case FRAMESIZE_SVGA: return "SVGA(800x600)";
+        case FRAMESIZE_XGA:  return "XGA(1024x768)";
+        case FRAMESIZE_SXGA: return "SXGA(1280x1024)";
+        case FRAMESIZE_UXGA: return "UXGA(1600x1200)";
+        case FRAMESIZE_QXGA: return "QXGA(2048x1536)";
+        default: return "未知";
+    }
 }
 
 void camera_power_off() {

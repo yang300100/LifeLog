@@ -20,4 +20,7 @@ int camera_capture_video(const char *filepath,
 // 关闭摄像头电源 (Deep Sleep 前调用)
 void camera_power_off();
 
+// 分辨率枚举 → 可读名称（用于启动日志）
+const char* camera_framesize_name(uint8_t fs);
+
 #endif

@@ -15,14 +15,17 @@
 #include "sd_storage.h"
 #include "configuration.h"
 #include "ble_service.h"
+#include "SD_MMC.h"
 #include "esp_sleep.h"
+#include "esp_timer.h"
 #include "driver/rtc_io.h"
 #include <stdio.h>
 
 // RTC 内存变量 — Deep Sleep 唤醒后保留
 RTC_DATA_ATTR uint32_t boot_count = 0;
+RTC_DATA_ATTR uint32_t restart_count = 0;  // 防止无限重启循环
 
-static AppConfig g_cfg;
+AppConfig g_cfg;
 
 // ── 进入 Deep Sleep ──
 static void enter_deep_sleep() {
@@ -39,6 +42,10 @@ static void enter_deep_sleep() {
     // 释放摄像头资源再休眠（简化硬件无外部 MOSFET，靠 deinit 降低功耗）
     camera_power_off();
 
+    // SD 卡卸载前多等片刻：sync_done 后的 index.txt 写入 + 文件删除
+    // 可能 SD 卡内部缓存还没落盘 CPU 就断电了，导致 last_synced 丢进度
+    delay(200);
+
     // SD 卡卸载
     SD_MMC.end();
 
@@ -49,6 +56,12 @@ static void enter_deep_sleep() {
         esp_err_t fallback_err = esp_sleep_enable_timer_wakeup(120 * 1000000ULL);
         if (fallback_err != ESP_OK) {
             Serial.printf("[SLEEP] 回退也失败: 0x%x，5 秒后尝试重启\n", fallback_err);
+            restart_count++;
+            if (restart_count > 5) {
+                Serial.println("[SLEEP] 连续重启超过5次，进入深度休眠60秒...");
+                esp_sleep_enable_timer_wakeup(60 * 1000000ULL);
+                esp_deep_sleep_start();
+            }
             delay(5000);
             esp_restart();
         }
@@ -79,6 +92,10 @@ static bool record_clip(uint16_t clip_id) {
 
     Serial.printf("[REC] 完成: %d 帧\n", frames);
 
+    // 记录录制时刻（esp_timer 跨 deep sleep 连续走时，
+    // BLE 文件列表用它算相对年龄，手机端还原真实录制时间）
+    sd_clip_ts_write(clip_id, (uint64_t)(esp_timer_get_time() / 1000));
+
     // 更新 SD 卡索引
     if (!sd_index_update_last_id(clip_id)) {
         Serial.println("[ERR] 更新 index.txt 失败");
@@ -92,10 +109,35 @@ static bool record_clip(uint16_t clip_id) {
 static void enter_setup_mode() {
     Serial.println("[SETUP] 首次启动 — 自动生成默认配置...");
 
-    config_save("/camera.cfg", g_cfg);
+    config_save("/sdcard/camera.cfg", g_cfg);
     Serial.println("[SETUP] 已生成默认 camera.cfg");
     Serial.printf("[SETUP] 2 秒后开始正常循环...\n");
     delay(2000);
+}
+
+// ── 一次性清理旧文件 ──
+static void cleanup_old_files() {
+    // 检查清理标记文件，已清理过则跳过
+    FILE *flag = fopen("/sdcard/.cleanup_done", "r");
+    if (flag) { fclose(flag); return; }
+
+    Serial.println("[CLEAN] 检测到首次启动，清理 SD 卡旧文件...");
+    // 删除所有旧 clip 文件
+    for (uint16_t id = 1; id <= 100; id++) {
+        char fname[32];
+        sd_next_filename(id, fname, sizeof(fname));
+        if (remove(fname) == 0) {
+            Serial.printf("  已删除: %s\n", fname);
+        }
+    }
+    // 重置索引
+    remove("/sdcard/index.txt");
+    remove("/sdcard/camera.cfg");
+    remove("/sdcard/clip_ts.txt");
+    // 写入清理标记
+    flag = fopen("/sdcard/.cleanup_done", "w");
+    if (flag) { fprintf(flag, "1\n"); fclose(flag); }
+    Serial.println("[CLEAN] 清理完成!");
 }
 
 // ── 主设置 ──
@@ -125,21 +167,22 @@ void setup() {
     Serial.println("OK");
     Serial.printf("       剩余空间: %u MB\n", sd_free_mb());
 
-    // 2. 加载配置
+    // 1.5 一次性清理旧 resolution 的大文件
+    cleanup_old_files();
+
     // 2. 加载配置（文件不存在时自动使用默认值）
-    if (!config_load("/camera.cfg", g_cfg)) {
+    if (!config_load("/sdcard/camera.cfg", g_cfg)) {
         // 首次启动，自动生成默认配置
         enter_setup_mode();
     }
-    } else {
-        fclose(f);
-    }
 
-    Serial.printf("[CFG] 模式=%s, 间隔=%us, 视频=%ums, Q=%u\n",
+    Serial.printf("[CFG] 模式=%s, 间隔=%us, 视频=%ums, Q=%u, 分辨率=%s, fps=%u\n",
                   g_cfg.capture_mode,
                   g_cfg.interval / 1000,
                   g_cfg.video_duration,
-                  g_cfg.video_quality);
+                  g_cfg.video_quality,
+                  camera_framesize_name(g_cfg.video_resolution),
+                  g_cfg.video_fps);
 
     // 4. 初始化摄像头（按配置参数）
     Serial.print("[INIT] 摄像头... ");
@@ -164,6 +207,10 @@ void setup() {
     if (!record_clip(next_id)) {
         Serial.println("[ERR] 录制环节失败");
     }
+
+    // 6.5 录制完成后关闭摄像头，释放 PSRAM 给 BLE 使用
+    Serial.println("[CAM] 释放摄像头资源...");
+    camera_power_off();
 
     // 7. BLE 广播窗口 — 等待手机连接并同步文件
 #ifdef WITH_BLE

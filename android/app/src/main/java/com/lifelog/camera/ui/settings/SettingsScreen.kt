@@ -222,25 +222,7 @@ fun SettingsScreen(
                 modifier = Modifier.padding(vertical = 10.dp),
                 color = MaterialTheme.colorScheme.outlineVariant
             )
-            SettingsInfoRow("设备名称", "lifelog-cam")
-
-            Divider(
-                modifier = Modifier.padding(vertical = 10.dp),
-                color = MaterialTheme.colorScheme.outlineVariant
-            )
-            SettingsInfoRow("传输方式", "BLE 4.2+")
-
-            Divider(
-                modifier = Modifier.padding(vertical = 10.dp),
-                color = MaterialTheme.colorScheme.outlineVariant
-            )
-            SettingsInfoRow("录制间隔", "2 分钟")
-
-            Divider(
-                modifier = Modifier.padding(vertical = 10.dp),
-                color = MaterialTheme.colorScheme.outlineVariant
-            )
-            SettingsInfoRow("视频时长", "5 秒 / QVGA")
+            DeviceConfigPanel(viewModel.bleTransfer)
         }
 
         // ── 同伴配置 ──

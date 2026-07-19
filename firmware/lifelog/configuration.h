@@ -15,6 +15,9 @@ struct AppConfig {
     uint16_t ble_adv_interval;  // ms (20/100/500)
 };
 
+// 全局配置实例（lifelog.ino 中定义，其他模块可通过此声明访问）
+extern AppConfig g_cfg;
+
 // 加载默认值
 void config_set_defaults(AppConfig &cfg);
 

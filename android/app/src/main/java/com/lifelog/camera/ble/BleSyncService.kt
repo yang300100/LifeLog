@@ -16,6 +16,7 @@ import com.lifelog.camera.ai.AnalysisManager
 import com.lifelog.camera.ai.ApiPreferences
 import com.lifelog.camera.data.repository.VideoRepository
 import com.lifelog.camera.data.local.entity.VideoClipEntity
+import com.lifelog.camera.media.MjpegTranscoder
 import com.lifelog.camera.util.CrashLogger
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
@@ -31,6 +32,7 @@ class BleSyncService : Service() {
     @Inject lateinit var repository: VideoRepository
     @Inject lateinit var analysisManager: AnalysisManager
     @Inject lateinit var apiPreferences: ApiPreferences
+    @Inject lateinit var mjpegTranscoder: MjpegTranscoder
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var syncJob: Job? = null
@@ -42,7 +44,7 @@ class BleSyncService : Service() {
         const val ACTION_START_SYNC = "com.lifelog.camera.START_SYNC"
         const val ACTION_START_PERSISTENT = "com.lifelog.camera.START_PERSISTENT"
         private const val TAG = "BleSyncSvc"
-        private const val PERSISTENT_INTERVAL_MS = 120_000L  // 实时模式 2 分钟扫一次
+        private const val PERSISTENT_INTERVAL_MS = 300_000L  // 实时模式 5 分钟扫一次（跟固件拍摄周期对齐）
         private const val PERSISTENT_SCAN_TIMEOUT = 15_000L  // 每次扫 15 秒
     }
 
@@ -125,12 +127,23 @@ class BleSyncService : Service() {
             val videoDir = repository.getVideoDir()
             while (isPersistent || syncJob == coroutineContext[Job]) {
                 CrashLogger.i(TAG, "开始扫描...")
+
+                // 连接建立后，先把设置页面暂存的配置发到设备
+                if (bleTransfer.hasPendingConfig) {
+                    bleTransfer.flushPendingConfig()
+                }
+
                 val result = try {
                     bleTransfer.startSync(videoDir)
                 } catch (e: SecurityException) {
                     Result.failure(e)
                 } catch (e: Exception) {
                     Result.failure(e)
+                }
+
+                // 同步完成后刷新设备信息缓存（设置页面展示用）
+                if (result.isSuccess) {
+                    try { bleTransfer.refreshCachedDeviceInfo() } catch (_: Exception) {}
                 }
 
                 result.onSuccess { count ->
@@ -164,6 +177,13 @@ class BleSyncService : Service() {
                             }
                         }
                     }
+                    // 同步成功后：给所有缺 MP4 的 .mjpg 补转码（含历史遗留文件）
+                    // .mjpg 是私有格式没法播，MP4 才是播放用的正式产物
+                    try {
+                        transcodeMissingMp4(videoDir)
+                    } catch (e: Exception) {
+                        CrashLogger.e(TAG, "批量转码异常", e)
+                    }
                 }
 
                 result.onFailure { e ->
@@ -183,8 +203,23 @@ class BleSyncService : Service() {
         }
     }
 
-    private fun buildNotification(text: String): Notification {
-        val pendingIntent = PendingIntent.getActivity(
+    /** 为 videoDir 中缺少同名 .mp4 的 .mjpg 逐个转码（播放用；mjpg 保留给 AI 分析） */
+    private fun transcodeMissingMp4(videoDir: File) {
+        val mjpgFiles = videoDir.listFiles()?.filter { it.extension == "mjpg" } ?: return
+        for (mjpg in mjpgFiles) {
+            val mp4 = File(videoDir, mjpg.nameWithoutExtension + ".mp4")
+            // mjpg 比 mp4 新 = 重传补齐过，旧 mp4（可能是残片转的）要重转
+            if (mp4.exists() && mp4.length() > 0 && mp4.lastModified() >= mjpg.lastModified()) continue
+            try {
+                val ok = mjpegTranscoder.transcode(mjpg, mp4, durationMs = 5000)
+                CrashLogger.i(TAG, "转码 ${mjpg.name} → ${if (ok) "OK" else "失败(源文件可能损坏)"}")
+            } catch (e: Exception) {
+                CrashLogger.e(TAG, "转码异常: ${mjpg.name}", e)
+            }
+        }
+    }
+
+    private fun buildNotification(text: String): Notification {        val pendingIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -221,7 +256,8 @@ class BleSyncService : Service() {
                 VideoClipEntity(
                     id = id,
                     fileName = f.name,
-                    capturedAt = System.currentTimeMillis(),
+                    // 真实录制时间：固件给的相对年龄换算，取不到则从已知文件估算
+                    capturedAt = bleTransfer.estimatedCapturedAt(id),
                     fileSize = f.length(),
                     durationMs = 5000,
                     localPath = f.absolutePath,

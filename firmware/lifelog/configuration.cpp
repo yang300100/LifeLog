@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include "configuration.h"
 #include "config.h"
 #include "esp_camera.h"
@@ -54,11 +55,21 @@ bool config_load(const char *filepath, AppConfig &cfg) {
     char key[64], value[64];
 
     while (fgets(line, sizeof(line), f)) {
+        // 检测行截断：最后字符不是 \n 且不是 EOF
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] != '\n' && !feof(f)) {
+            // 跳过被截断的行的剩余部分
+            int c;
+            while ((c = fgetc(f)) != '\n' && c != EOF) {}
+            continue;
+        }
         if (!parse_line(line, key, sizeof(key), value, sizeof(value)))
             continue;
 
-        if (strcmp(key, "capture_mode") == 0)
+        if (strcmp(key, "capture_mode") == 0) {
             strncpy(cfg.capture_mode, value, sizeof(cfg.capture_mode) - 1);
+            cfg.capture_mode[sizeof(cfg.capture_mode) - 1] = '\0';  // strncpy 不保证 null 结尾
+        }
         else if (strcmp(key, "video_duration") == 0) {
             cfg.video_duration = atoi(value);
             if (cfg.video_duration < 1000 || cfg.video_duration > 30000) {
@@ -99,8 +110,10 @@ bool config_load(const char *filepath, AppConfig &cfg) {
                 cfg.ble_advertise_timeout = BLE_ADV_TIMEOUT_DEFAULT;
             }
         }
-        else if (strcmp(key, "ble_device_name") == 0)
+        else if (strcmp(key, "ble_device_name") == 0) {
             strncpy(cfg.ble_device_name, value, sizeof(cfg.ble_device_name) - 1);
+            cfg.ble_device_name[sizeof(cfg.ble_device_name) - 1] = '\0';
+        }
         else if (strcmp(key, "ble_adv_interval") == 0) {
             cfg.ble_adv_interval = atoi(value);
             if (cfg.ble_adv_interval < 20 || cfg.ble_adv_interval > 1000) {

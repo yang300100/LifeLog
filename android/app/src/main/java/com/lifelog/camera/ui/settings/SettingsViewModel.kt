@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lifelog.camera.ai.AIClient
 import com.lifelog.camera.ai.ApiPreferences
+import com.lifelog.camera.ble.BleFileTransfer
 import com.lifelog.camera.data.local.CompanionStorage
 import com.lifelog.camera.data.model.ReferenceCategory
 import com.lifelog.camera.data.repository.VideoRepository
@@ -24,6 +25,7 @@ class SettingsViewModel @Inject constructor(
     private val repository: VideoRepository,
     private val apiPreferences: ApiPreferences,
     private val companionStorage: CompanionStorage,
+    val bleTransfer: BleFileTransfer,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 

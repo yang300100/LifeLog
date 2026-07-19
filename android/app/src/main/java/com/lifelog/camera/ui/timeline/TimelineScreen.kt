@@ -3,6 +3,7 @@ package com.lifelog.camera.ui.timeline
 import android.content.Intent
 import android.net.Uri
 import android.provider.MediaStore
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -38,6 +39,44 @@ import com.lifelog.camera.ble.BleSyncService
 import com.lifelog.camera.ui.theme.PeachSuccess
 import com.lifelog.camera.ui.theme.PeachSuccessContainer
 import java.io.File
+
+/**
+ * 播放片段：ESP32 片段的 localPath 是 .mjpg（私有格式，播放器不认识），
+ * 实际播放同步后转码出的同名 .mp4；手机拍摄的片段 localPath 本身就是 .mp4。
+ */
+private fun playClipFile(context: android.content.Context, localPath: String) {
+    val playFile = if (localPath.endsWith(".mjpg")) {
+        File(localPath.removeSuffix(".mjpg") + ".mp4")
+    } else {
+        File(localPath)
+    }
+    if (!playFile.exists() || playFile.length() < 100) {
+        Toast.makeText(context, if (playFile.exists()) "视频正在转码，稍后再试~"
+                                 else "视频还在转码中，稍后再试~",
+                       Toast.LENGTH_SHORT).show()
+        return
+    }
+    val uri = FileProvider.getUriForFile(
+        context, "${context.packageName}.fileprovider", playFile
+    )
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, "video/mp4")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    try {
+        context.startActivity(intent)
+    } catch (_: android.content.ActivityNotFoundException) {
+        Toast.makeText(context, "没有找到可以播放视频的应用", Toast.LENGTH_SHORT).show()
+    } catch (_: Exception) {}
+}
+
+/** 启动摄像头同步（尊重实时/日志模式），多处按钮共用 */
+private fun startCameraSync(context: android.content.Context, realtime: Boolean) {
+    val action = if (realtime) BleSyncService.ACTION_START_PERSISTENT
+                 else BleSyncService.ACTION_START_SYNC
+    val intent = Intent(context, BleSyncService::class.java).apply { this.action = action }
+    try { context.startForegroundService(intent) } catch (_: Exception) {}
+}
 
 @Composable
 fun TimelineScreen(
@@ -97,6 +136,12 @@ fun TimelineScreen(
         captureLauncher.launch(intent)
     }
 
+    // 页面首次加载时自动启动后台定时同步（每 5 分钟扫一次，与固件拍摄周期对齐）
+    // 如果已在跑，Service 内部会检测并忽略重复启动
+    LaunchedEffect(Unit) {
+        startCameraSync(context, realtime = true)
+    }
+
     // 同步状态变化时显示胶囊
     LaunchedEffect(syncState, isAnalyzing) {
         val isActive = syncState !is BleFileTransfer.SyncState.Idle &&
@@ -124,41 +169,58 @@ fun TimelineScreen(
                     analysisMsg = analysisMsg,
                     analysisError = analysisError,
                     unanalyzed = unanalyzed,
-                    onSync = {
-                        val action = if (viewModel.isRealtimeMode())
-                            BleSyncService.ACTION_START_PERSISTENT
-                        else BleSyncService.ACTION_START_SYNC
-                        val intent = Intent(context, BleSyncService::class.java).apply {
-                            this.action = action
-                        }
-                        try { context.startForegroundService(intent) } catch (_: Exception) {}
-                    },
+                    onSync = { startCameraSync(context, viewModel.isRealtimeMode()) },
                     onAnalyze = { viewModel.runAnalysis() },
                     onReanalyze = { viewModel.reanalyzeAll() }
                 )
             }
 
-            // 日期导航条
+            // 日期导航条（右侧常驻同步按钮 —— 有视频了也要能随时手动同步）
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = { viewModel.goToPrevDay() }, modifier = Modifier.size(28.dp)) {
-                    Icon(Icons.Default.ChevronLeft, "前一天", tint = MaterialTheme.colorScheme.primary)
-                }
-                Text(dateLabel, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                IconButton(
-                    onClick = { viewModel.goToNextDay() }, modifier = Modifier.size(28.dp),
-                    enabled = !isToday
+                Spacer(modifier = Modifier.width(40.dp))  // 左侧配重，让日期保持视觉居中
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
                 ) {
-                    Icon(Icons.Default.ChevronRight, "后一天",
-                         tint = if (isToday) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
-                               else MaterialTheme.colorScheme.primary)
+                    IconButton(onClick = { viewModel.goToPrevDay() }, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.ChevronLeft, "前一天", tint = MaterialTheme.colorScheme.primary)
+                    }
+                    Text(dateLabel, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                    IconButton(
+                        onClick = { viewModel.goToNextDay() }, modifier = Modifier.size(28.dp),
+                        enabled = !isToday
+                    ) {
+                        Icon(Icons.Default.ChevronRight, "后一天",
+                             tint = if (isToday) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                                   else MaterialTheme.colorScheme.primary)
+                    }
+                    if (!isToday) {
+                        TextButton(onClick = { viewModel.goToToday() }, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                            Text("今天", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
                 }
-                if (!isToday) {
-                    TextButton(onClick = { viewModel.goToToday() }, contentPadding = PaddingValues(horizontal = 4.dp)) {
-                        Text("今天", style = MaterialTheme.typography.labelSmall)
+                val syncActive = syncState is BleFileTransfer.SyncState.Scanning ||
+                                 syncState is BleFileTransfer.SyncState.Connecting ||
+                                 syncState is BleFileTransfer.SyncState.Syncing
+                IconButton(
+                    onClick = { startCameraSync(context, viewModel.isRealtimeMode()) },
+                    enabled = !syncActive,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    if (syncActive) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp), strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    } else {
+                        Icon(Icons.Default.Sync, "同步摄像头",
+                             tint = MaterialTheme.colorScheme.primary,
+                             modifier = Modifier.size(20.dp))
                     }
                 }
             }
@@ -193,12 +255,7 @@ fun TimelineScreen(
                         Spacer(modifier = Modifier.height(20.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Button(
-                                onClick = {
-                                    val intent = Intent(context, BleSyncService::class.java).apply {
-                                        action = BleSyncService.ACTION_START_SYNC
-                                    }
-                                    try { context.startForegroundService(intent) } catch (_: Exception) {}
-                                },
+                                onClick = { startCameraSync(context, false) },
                                 shape = RoundedCornerShape(16.dp),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = MaterialTheme.colorScheme.primary
@@ -222,7 +279,8 @@ fun TimelineScreen(
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    // 底部留足空间，最新的视频不会被右下角的悬浮按钮（拍摄/图库）挡住
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 170.dp),
                     verticalArrangement = Arrangement.spacedBy(0.dp)
                 ) {
                     items(items) { item ->
@@ -230,17 +288,7 @@ fun TimelineScreen(
                             item = item,
                             isAnalyzing = item.clip.id in analyzingClipIds,
                             onCardClick = { zoomedClipId = item.clip.id },
-                            onPlay = {
-                                val file = java.io.File(item.clip.localPath)
-                                val uri = FileProvider.getUriForFile(
-                                    context, "${context.packageName}.fileprovider", file
-                                )
-                                val intent = Intent(Intent.ACTION_VIEW).apply {
-                                    setDataAndType(uri, "video/*")
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                }
-                                try { context.startActivity(intent) } catch (_: Exception) {}
-                            },
+                            onPlay = { playClipFile(context, item.clip.localPath) },
                             onDelete = {
                                 viewModel.deleteClip(item.clip.id, item.clip.localPath)
                             },
@@ -276,17 +324,7 @@ fun TimelineScreen(
                         item = currentItem,
                         isAnalyzing = clipId in analyzingClipIds,
                         onDismiss = { zoomedClipId = null },
-                    onPlay = {
-                        val file = java.io.File(currentItem.clip.localPath)
-                        val uri = FileProvider.getUriForFile(
-                            context, "${context.packageName}.fileprovider", file
-                        )
-                        val intent = Intent(Intent.ACTION_VIEW).apply {
-                            setDataAndType(uri, "video/*")
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        try { context.startActivity(intent) } catch (_: Exception) {}
-                    },
+                        onPlay = { playClipFile(context, currentItem.clip.localPath) },
                     onDelete = {
                         viewModel.deleteClip(currentItem.clip.id, currentItem.clip.localPath)
                         zoomedClipId = null
@@ -423,6 +461,7 @@ fun TimelineScreen(
             Icon(Icons.Default.Person, "陪伴图库")
         }
     }
+
 }
 
 // ── 同步状态胶囊 ──

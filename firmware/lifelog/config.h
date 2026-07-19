@@ -21,19 +21,27 @@
 
 // BLE 配置
 #define BLE_DEVICE_NAME_DEFAULT  "lifelog-cam"
-#define BLE_ADV_TIMEOUT_DEFAULT  90000   // 广播窗口 (ms) — QXGA 极限画质需要较长的传输时间
+#define BLE_ADV_TIMEOUT_DEFAULT  300000  // 广播窗口 (ms) — 5分钟足够传输全部文件
 #define BLE_ADV_INTERVAL_DEFAULT 100     // 广播间隔 (ms)
 
 // 视频录制默认参数
 #define VIDEO_DURATION_DEFAULT   5000    // 视频时长 (ms)
-#define VIDEO_RESOLUTION_DEFAULT FRAMESIZE_QXGA   // 2048×1536 OV3660极限 (QVGA=320×240, VGA=640×480, SVGA=800×600, XGA=1024×768, SXGA=1280×1024, UXGA=1600×1200, QXGA=2048×1536)
-#define VIDEO_QUALITY_DEFAULT    10      // JPEG 质量 (10-63, 越小画质越好)
-#define VIDEO_FPS_DEFAULT        3       // 帧率 — QXGA 下 ESP32 硬件编码极限约 3fps
+#define VIDEO_RESOLUTION_DEFAULT FRAMESIZE_UXGA   // 1600×1200 — OV2640 传感器上限
+#define VIDEO_QUALITY_DEFAULT    12      // JPEG 质量 (10-63, 越小画质越好文件越大)
+#define VIDEO_FPS_DEFAULT        3       // 帧率
 
 // 拍照间隔默认 (ms)
-#define INTERVAL_DEFAULT         300000  // 5 分钟 — 极限画质拉长间隔保续航
+#define INTERVAL_DEFAULT         300000  // 5 分钟
+
+// 电池监测（ESP32 ADC，GPIO33 在 ESP32-CAM 上常用，按实际硬件改）
+#define BATTERY_ADC_PIN         33      // ADC1_CH5
+#define BATTERY_ADC_ATTEN       ADC_11db  // 0~3.9V 量程
+#define BATTERY_VOLTAGE_DIVIDER 2.0f    // 分压比（100k+100k = 二分之一）
+#define BATTERY_MIN_VOLTAGE     3.3f    // LiPo 放电截止电压 ≈ 0%
+#define BATTERY_MAX_VOLTAGE     4.2f    // LiPo 满电电压 ≈ 100%
 
 // SD 卡
-#define SD_INDEX_FILE            "/index.txt"
+#define SD_INDEX_FILE            "/sdcard/index.txt"
+#define SD_CLIP_TS_FILE          "/sdcard/clip_ts.txt"  // 每段视频的录制时刻 (esp_timer ms)
 
 #endif
