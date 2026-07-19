@@ -40,6 +40,7 @@ void config_set_defaults(AppConfig &cfg) {
     cfg.video_quality = VIDEO_QUALITY_DEFAULT;
     cfg.video_fps = VIDEO_FPS_DEFAULT;
     cfg.interval = INTERVAL_DEFAULT;
+    cfg.flash_threshold = FLASH_DARK_THRESHOLD;
     cfg.ble_advertise_timeout = BLE_ADV_TIMEOUT_DEFAULT;
     strcpy(cfg.ble_device_name, BLE_DEVICE_NAME_DEFAULT);
     cfg.ble_adv_interval = BLE_ADV_INTERVAL_DEFAULT;
@@ -104,6 +105,12 @@ bool config_load(const char *filepath, AppConfig &cfg) {
                 cfg.interval = INTERVAL_DEFAULT;
             }
         }
+        else if (strcmp(key, "flash_threshold") == 0) {
+            cfg.flash_threshold = atoi(value);
+            if (cfg.flash_threshold < 10000 || cfg.flash_threshold > 500000) {
+                cfg.flash_threshold = FLASH_DARK_THRESHOLD;
+            }
+        }
         else if (strcmp(key, "ble_advertise_timeout") == 0) {
             cfg.ble_advertise_timeout = atoi(value);
             if (cfg.ble_advertise_timeout < 5000 || cfg.ble_advertise_timeout > 120000) {
@@ -143,6 +150,7 @@ bool config_save(const char *filepath, const AppConfig &cfg) {
     fprintf(f, "video_quality = %u\n", cfg.video_quality);
     fprintf(f, "video_fps = %u\n", cfg.video_fps);
     fprintf(f, "interval = %u\n", cfg.interval);
+    fprintf(f, "flash_threshold = %u\n", cfg.flash_threshold);
     fprintf(f, "ble_advertise_timeout = %u\n", cfg.ble_advertise_timeout);
     fprintf(f, "ble_device_name = %s\n", cfg.ble_device_name);
     fprintf(f, "ble_adv_interval = %u\n", cfg.ble_adv_interval);

@@ -10,6 +10,7 @@ struct AppConfig {
     uint8_t  video_quality;     // 10-63
     uint8_t  video_fps;
     uint32_t interval;          // ms between captures
+    uint32_t flash_threshold;   // JPEG bytes，低于此值开启闪光灯
     uint32_t ble_advertise_timeout;  // ms
     char ble_device_name[32];
     uint16_t ble_adv_interval;  // ms (20/100/500)

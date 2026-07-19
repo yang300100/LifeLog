@@ -106,7 +106,8 @@ class BleFileTransfer @Inject constructor(
         val videoFps: Int = 3,
         val bleAdvertiseTimeout: Int = 300000,
         val bleDeviceName: String = "lifelog-cam",
-        val bleAdvInterval: Int = 100
+        val bleAdvInterval: Int = 100,
+        val flashThreshold: Int = 60000
     )
 
     /** 最近一次同步解析出的文件真实录制时间 (id → epoch ms)，供 Service 注册实体用 */
@@ -827,7 +828,8 @@ class BleFileTransfer @Inject constructor(
         videoFps: Int? = null,
         bleAdvertiseTimeout: Int? = null,
         bleDeviceName: String? = null,
-        bleAdvInterval: Int? = null
+        bleAdvInterval: Int? = null,
+        flashThreshold: Int? = null
     ) {
         val parts = mutableListOf<String>()
         interval?.let { parts.add("\"interval\":$it") }
@@ -838,6 +840,7 @@ class BleFileTransfer @Inject constructor(
         bleAdvertiseTimeout?.let { parts.add("\"ble_advertise_timeout\":$it") }
         bleDeviceName?.let { parts.add("\"ble_device_name\":\"${it.replace("\\", "\\\\").replace("\"", "\\\"")}\"") }
         bleAdvInterval?.let { parts.add("\"ble_adv_interval\":$it") }
+        flashThreshold?.let { parts.add("\"flash_threshold\":$it") }
         if (parts.isEmpty()) return
         pendingConfig = """{"cmd":"config",${parts.joinToString(",")}}"""
         CrashLogger.i(TAG, "配置已暂存: ${pendingConfig!!.take(200)}")
@@ -884,7 +887,8 @@ class BleFileTransfer @Inject constructor(
             videoFps = int("video_fps"),
             bleAdvertiseTimeout = int("ble_advertise_timeout"),
             bleDeviceName = str("ble_device_name"),
-            bleAdvInterval = int("ble_adv_interval")
+            bleAdvInterval = int("ble_adv_interval"),
+            flashThreshold = int("flash_threshold")
         )
     }
 }

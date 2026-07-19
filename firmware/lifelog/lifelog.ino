@@ -19,7 +19,23 @@
 #include "esp_sleep.h"
 #include "esp_timer.h"
 #include "driver/rtc_io.h"
+#include "driver/gpio.h"
 #include <stdio.h>
+
+// ── 板载状态 LED ──
+// ESP32-CAM 红色 LED（GPIO33）：低电平点亮（阴极接 GPIO，阳极接 3.3V）
+#ifdef WITH_STATUS_LED
+void led_on()  { pinMode(33, OUTPUT); digitalWrite(33, LOW);  }  // LOW = 亮
+void led_off() { pinMode(33, OUTPUT); digitalWrite(33, HIGH); }  // HIGH = 灭
+void led_init() {
+    gpio_set_direction(GPIO_NUM_33, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPIO_NUM_33, HIGH);  // 初始灭
+}
+#else
+void led_on()  {}
+void led_off() {}
+void led_init() {}
+#endif
 
 // RTC 内存变量 — Deep Sleep 唤醒后保留
 RTC_DATA_ATTR uint32_t boot_count = 0;
@@ -76,6 +92,7 @@ static bool record_clip(uint16_t clip_id) {
     char filepath[32];
     sd_next_filename(clip_id, filepath, sizeof(filepath));
 
+    led_on();  // 录制中红灯常亮
     Serial.printf("[REC] 录制 %s (%u ms @ %u fps)...\n",
                   filepath, g_cfg.video_duration, g_cfg.video_fps);
 
@@ -91,6 +108,7 @@ static bool record_clip(uint16_t clip_id) {
     }
 
     Serial.printf("[REC] 完成: %d 帧\n", frames);
+    led_off();
 
     // 记录录制时刻（esp_timer 跨 deep sleep 连续走时，
     // BLE 文件列表用它算相对年龄，手机端还原真实录制时间）
@@ -146,6 +164,7 @@ void setup() {
     delay(100);  // 等待串口稳定
 
     boot_count++;
+    led_init();
     Serial.println();
     Serial.println("╔══════════════════════════════╗");
     Serial.println("║   LifeLog Camera v1.0       ║");
@@ -217,7 +236,9 @@ void setup() {
     Serial.printf("[BLE] 广播窗口 %u 秒, 设备名: %s\n",
                   g_cfg.ble_advertise_timeout / 1000,
                   g_cfg.ble_device_name);
+    // BLE 会话（公告时 LED 闪烁、连接后常亮，ble_service 内部处理）
     bool synced = ble_run_sync_session(g_cfg.ble_advertise_timeout);
+    led_off();
     if (synced) {
         Serial.printf("[BLE] 同步完成, 传输 %d 块\n", ble_files_transferred());
     } else {

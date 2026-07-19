@@ -101,6 +101,11 @@ static void build_file_list_json(char *buf, size_t bufsz) {
             uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
             age_s = (uint32_t)(now_ms > ts ? (now_ms - ts) / 1000 : 0);
         }
+        // 诊断日志：每次列表时打一条，确认年龄解析在固件端是活的
+        if (id == last_synced + 1) {
+            Serial.printf("[TS] 首文件 id=%u age=%us (ts=%llu)\n",
+                          id, age_s, (unsigned long long)ts);
+        }
 
         // 防御 buffer 溢出（带年龄的条目最长约 48 字节，留 60 字节余量）
         // 到上限就停止追加：列表宁缺毋滥，剩下的文件下周期的列表里再见
@@ -145,6 +150,7 @@ static void build_device_info_json(char *buf, size_t bufsz) {
         "\"video_resolution\":\"%s\","
         "\"video_quality\":%u,"
         "\"video_fps\":%u,"
+        "\"flash_threshold\":%u,"
         "\"ble_advertise_timeout\":%u,"
         "\"ble_device_name\":\"%s\","
         "\"ble_adv_interval\":%u}",
@@ -153,6 +159,7 @@ static void build_device_info_json(char *buf, size_t bufsz) {
         camera_framesize_name(g_cfg.video_resolution),
         g_cfg.video_quality,
         g_cfg.video_fps,
+        g_cfg.flash_threshold,
         g_cfg.ble_advertise_timeout,
         g_cfg.ble_device_name,
         g_cfg.ble_adv_interval);
@@ -325,6 +332,9 @@ static void process_command() {
 
         ival = json_get_int(cfgJson, "ble_advertise_timeout", -1);
         if (ival >= 5000 && ival <= 600000) newCfg.ble_advertise_timeout = (uint32_t)ival;
+
+        ival = json_get_int(cfgJson, "flash_threshold", -1);
+        if (ival >= 10000 && ival <= 500000) newCfg.flash_threshold = (uint32_t)ival;
 
         ival = json_get_int(cfgJson, "ble_adv_interval", -1);
         if (ival >= 20 && ival <= 1000) newCfg.ble_adv_interval = (uint16_t)ival;
@@ -601,6 +611,8 @@ bool ble_run_sync_session(uint32_t timeout_ms) {
     pServer->startAdvertising();
     uint32_t start = millis();
     uint32_t last_activity = start;
+    uint32_t last_blink = start;
+    bool led_state = false;
 
     // 主循环：等待连接 + 处理命令 + 等待传输完成
     // 超时按「无命令活动」计算 —— 传输进行中会话自动续期，
@@ -608,10 +620,18 @@ bool ble_run_sync_session(uint32_t timeout_ms) {
     while (millis() - last_activity < timeout_ms) {
         // 有新连接时更新广播状态
         if (g_connected && pServer->getConnectedCount() > 0) {
-            // 已连接，处理命令
+            // 已连接：红灯常亮
+            led_on();
             if (g_cmd_pending) {
                 process_command();
                 last_activity = millis();  // 有命令往来就续期
+            }
+        } else {
+            // 公告中：红灯闪烁 (~1.5 Hz)
+            if (millis() - last_blink > 300) {
+                led_state = !led_state;
+                led_state ? led_on() : led_off();
+                last_blink = millis();
             }
         }
 

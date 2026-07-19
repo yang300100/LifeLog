@@ -16,6 +16,13 @@
 // #define WITH_CAM_PWDN             // 不修改 PCB
 // #define WITH_SETUP_MODE_BUTTON    // 首次开机自动进入设置模式
 
+// ── 板载指示灯与闪光灯 ──
+#define WITH_STATUS_LED              // GPIO33 红色指示灯（状态反馈）
+#define STATUS_LED_PIN         33    // 与电池 ADC 共用引脚，分时复用
+#define WITH_AUTO_FLASH              // 光线不足时自动开启闪光灯 (GPIO4)
+#define FLASH_GPIO_NUM         4     // 摄像头闪光灯 LED
+#define FLASH_DARK_THRESHOLD   60000  // JPEG 低于此字节数判定为暗光（线上默认，App 可覆写）
+
 // Deep Sleep 唤醒源
 #define SLEEP_WAKEUP_TIMER
 
@@ -43,5 +50,9 @@
 // SD 卡
 #define SD_INDEX_FILE            "/sdcard/index.txt"
 #define SD_CLIP_TS_FILE          "/sdcard/clip_ts.txt"  // 每段视频的录制时刻 (esp_timer ms)
+
+// LED 控制（lifelog.ino 定义，ble_service 也可调用）
+void led_on();
+void led_off();
 
 #endif

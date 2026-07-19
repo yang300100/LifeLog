@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.clickable
 import com.lifelog.camera.ble.BleFileTransfer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -21,6 +22,7 @@ import kotlinx.coroutines.withContext
 
 private val RESOLUTIONS = listOf("QVGA", "VGA", "SVGA", "XGA", "SXGA", "UXGA", "QXGA")
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DeviceConfigPanel(bleTransfer: BleFileTransfer) {
     val context = LocalContext.current
@@ -36,6 +38,7 @@ fun DeviceConfigPanel(bleTransfer: BleFileTransfer) {
     var fps by remember { mutableIntStateOf(3) }
     var bleTimeoutSec by remember { mutableIntStateOf(300) }
     var bleName by remember { mutableStateOf("lifelog-cam") }
+    var flashThresh by remember { mutableIntStateOf(60000) }
     var initialized by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -45,6 +48,7 @@ fun DeviceConfigPanel(bleTransfer: BleFileTransfer) {
             videoDurationSec = d.videoDuration / 1000
             resolution = d.videoResolution; quality = d.videoQuality; fps = d.videoFps
             bleTimeoutSec = d.bleAdvertiseTimeout / 1000; bleName = d.bleDeviceName
+            flashThresh = d.flashThreshold
         }
         initialized = true; loading = false
     }
@@ -70,6 +74,7 @@ fun DeviceConfigPanel(bleTransfer: BleFileTransfer) {
                                 intervalMin = d.interval / 60000; videoDurationSec = d.videoDuration / 1000
                                 resolution = d.videoResolution; quality = d.videoQuality; fps = d.videoFps
                                 bleTimeoutSec = d.bleAdvertiseTimeout / 1000; bleName = d.bleDeviceName
+                                flashThresh = d.flashThreshold
                             }
                             loading = false
                         }
@@ -121,9 +126,29 @@ fun DeviceConfigPanel(bleTransfer: BleFileTransfer) {
                 Text("分辨率: $resolution", fontWeight = FontWeight.Medium)
                 Text("越高越清晰，但文件也越大（UXGA 约 2~5 MB / 段）。",
                      style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    RESOLUTIONS.forEach { r ->
-                        FilterChip(selected = r == resolution, onClick = { resolution = r }, label = { Text(r, style = MaterialTheme.typography.labelSmall) })
+                var resExpanded by remember { mutableStateOf(false) }
+                ExposedDropdownMenuBox(
+                    expanded = resExpanded,
+                    onExpandedChange = { resExpanded = it }
+                ) {
+                    OutlinedTextField(
+                        value = resolution,
+                        onValueChange = {},
+                        readOnly = true,
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = resExpanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth(),
+                        singleLine = true
+                    )
+                    ExposedDropdownMenu(
+                        expanded = resExpanded,
+                        onDismissRequest = { resExpanded = false }
+                    ) {
+                        RESOLUTIONS.forEach { r ->
+                            DropdownMenuItem(
+                                text = { Text(r) },
+                                onClick = { resolution = r; resExpanded = false }
+                            )
+                        }
                     }
                 }
                 Spacer(Modifier.height(12.dp))
@@ -149,6 +174,13 @@ fun DeviceConfigPanel(bleTransfer: BleFileTransfer) {
                 Slider(value = bleTimeoutSec.toFloat(), onValueChange = { bleTimeoutSec = it.toInt().coerceIn(30, 600) }, valueRange = 30f..600f)
                 Spacer(Modifier.height(12.dp))
 
+                // ── 闪光灯灵敏度 ──
+                Text("闪光灯灵敏度: ${flashThresh / 1000}K", fontWeight = FontWeight.Medium)
+                Text("测试帧 JPEG 低于此值自动开闪光灯。越小 = 只在越暗时触发。",
+                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Slider(value = flashThresh.toFloat(), onValueChange = { flashThresh = it.toInt().coerceIn(20000, 200000) }, valueRange = 20000f..200000f)
+                Spacer(Modifier.height(12.dp))
+
                 // ── 设备名 ──
                 OutlinedTextField(
                     value = bleName, onValueChange = { if (it.length <= 30) bleName = it },
@@ -163,7 +195,7 @@ fun DeviceConfigPanel(bleTransfer: BleFileTransfer) {
         // 下次 BleSyncService 自动同步时在连接建立后第一时间发送
         Button(
             onClick = {
-                bleTransfer.saveConfig(intervalMin * 60000, videoDurationSec * 1000, resolution, quality, fps, bleTimeoutSec * 1000, bleName)
+                bleTransfer.saveConfig(intervalMin * 60000, videoDurationSec * 1000, resolution, quality, fps, bleTimeoutSec * 1000, bleName, flashThreshold = flashThresh)
                 Toast.makeText(context, "已保存，将在下次同步时发送到设备", Toast.LENGTH_SHORT).show()
             },
             modifier = Modifier.fillMaxWidth(),

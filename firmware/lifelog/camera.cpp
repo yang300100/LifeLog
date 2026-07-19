@@ -6,6 +6,7 @@
 #include "esp_camera.h"
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
+#include "driver/gpio.h"
 #include <stdio.h>
 
 bool camera_init(const AppConfig &cfg) {
@@ -71,8 +72,39 @@ int camera_capture_video(const char *filepath,
         fps = 5;
     }
 
+    // ── 自动闪光灯：录制前取帧采样亮度 ──
+    // 第一帧是传感器上电"盲帧"→ 曝光还没收敛，不能用来判光 → 丢弃
+    bool flash_on = false;
+#ifdef WITH_AUTO_FLASH
+    gpio_set_direction(GPIO_NUM_4, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPIO_NUM_4, 0);
+    // 丢一帧让传感器曝光稳定
+    camera_fb_t *discard = esp_camera_fb_get();
+    if (discard) esp_camera_fb_return(discard);
+    delay(120);  // 等传感器 AEC/AWB 收敛
+    camera_fb_t *test_fb = esp_camera_fb_get();
+    if (test_fb) {
+        if (test_fb->len < g_cfg.flash_threshold) {
+            gpio_set_level(GPIO_NUM_4, 1);
+            flash_on = true;
+            Serial.printf("[CAM] 暗光检测 (JPEG=%u < %u)，开启闪光灯\n",
+                          test_fb->len, g_cfg.flash_threshold);
+        } else {
+            Serial.printf("[CAM] 光线充足 (JPEG=%u >= %u)，不开启闪光灯\n",
+                          test_fb->len, g_cfg.flash_threshold);
+        }
+        esp_camera_fb_return(test_fb);
+    }
+    if (flash_on) delay(80);  // LED 点亮后给传感器一瞬调整曝光
+#endif
+
     FILE *f = fopen(filepath, "wb");
-    if (!f) return -1;
+    if (!f) {
+#ifdef WITH_AUTO_FLASH
+        if (flash_on) gpio_set_level(GPIO_NUM_4, 0);
+#endif
+        return -1;
+    }
 
     uint32_t frame_interval_ms = 1000 / fps;
     uint64_t start_ms = esp_timer_get_time() / 1000;
@@ -127,6 +159,9 @@ int camera_capture_video(const char *filepath,
     }
 
     fclose(f);
+#ifdef WITH_AUTO_FLASH
+    if (flash_on) gpio_set_level(GPIO_NUM_4, 0);
+#endif
     return frame_count;
 }
 
