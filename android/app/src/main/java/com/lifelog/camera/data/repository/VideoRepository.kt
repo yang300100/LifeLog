@@ -1,6 +1,7 @@
 package com.lifelog.camera.data.repository
 
 import com.lifelog.camera.data.local.AppDatabase
+import com.lifelog.camera.data.local.StorageDayStats
 import com.lifelog.camera.data.local.entity.VideoClipEntity
 import com.lifelog.camera.data.local.entity.ActivityLabelEntity
 import com.lifelog.camera.data.local.entity.CharacterStatsEntity
@@ -45,9 +46,39 @@ class VideoRepository @Inject constructor(
     suspend fun deleteClip(clipId: Long, localPath: String) {
         labelDao.deleteByClipId(clipId)
         clipDao.deleteById(clipId)
-        File(localPath).delete()
-        // 同时清理同名 MJPEG 预览
-        File(localPath.replace(".mp4", ".mjpg")).delete()
+        // 删除源文件 + 转码产物（localPath 存的是 .mjpg，也要删同名 .mp4）
+        val base = localPath.removeSuffix(".mjpg").removeSuffix(".mp4")
+        File("$base.mjpg").delete()
+        File("$base.mp4").delete()
+    }
+
+    // ── 存储管理 ──
+
+    /** 按日期分组获取存储统计 */
+    suspend fun getStorageStatsByDay(): List<StorageDayStats> =
+        clipDao.getStorageStatsByDay()
+
+    /** 获取指定日期范围的 clips */
+    suspend fun getClipsInRange(start: Long, end: Long): List<VideoClipEntity> =
+        clipDao.getClipsInRange(start, end)
+
+    /** 仅删除视频源文件（.mjpg + .mp4），保留 DB 记录和分析结果 */
+    suspend fun deleteSourceFilesOnly(clipIds: List<Long>): Int {
+        var deleted = 0
+        for (id in clipIds) {
+            val clip = clipDao.getById(id) ?: continue
+            val mjpg = File(clip.localPath)
+            val mp4 = File(clip.localPath.replace(".mjpg", ".mp4"))
+            if (mjpg.delete()) deleted++
+            mp4.delete()  // 可能不存在（旧文件或转码失败），不报错
+        }
+        return deleted
+    }
+
+    /** 获取所有剪辑的总存储占用（字节） */
+    suspend fun getTotalStorageBytes(): Long {
+        val stats = clipDao.getStorageStatsByDay()
+        return stats.sumOf { it.totalBytes }
     }
 
     // ── AI 分析 ──
@@ -69,6 +100,13 @@ class VideoRepository @Inject constructor(
     fun getVideoFile(fileName: String): File = File(videoDir, fileName)
 
     fun getVideoDir(): File = videoDir
+
+    /** 用精确时间戳回填旧记录的 capturedAt（同步后拿到固件给的 age 时调用） */
+    suspend fun fixTimestamps(capturedAtMap: Map<Long, Long>) {
+        capturedAtMap.forEach { (id, ts) ->
+            try { clipDao.updateCapturedAt(id, ts) } catch (_: Exception) {}
+        }
+    }
 
     // ── RPG 模式 ──
 

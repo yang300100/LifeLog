@@ -74,12 +74,15 @@ class BleSyncService : Service() {
 
     private fun startSync(oneShot: Boolean) {
         if (syncJob?.isActive == true) {
-            if (isPersistent == !oneShot) {
-                CrashLogger.w(TAG, "已在${if(isPersistent)"实时" else "单次"}模式，忽略")
+            if (oneShot) {
+                // 手动点了同步按钮 → 中断等待/当前操作，立刻开始一轮新同步
+                CrashLogger.i(TAG, "手动触发同步，重启同步循环")
+                syncJob?.cancel()
+            } else {
+                // 自动定时器触发但已有同步在跑 → 跳过这一轮
+                CrashLogger.w(TAG, "同步已在运行中，跳过本轮自动扫描")
                 return
             }
-            // 切换模式：先停旧任务
-            syncJob?.cancel()
         }
 
         isPersistent = !oneShot
@@ -128,11 +131,6 @@ class BleSyncService : Service() {
             while (isPersistent || syncJob == coroutineContext[Job]) {
                 CrashLogger.i(TAG, "开始扫描...")
 
-                // 连接建立后，先把设置页面暂存的配置发到设备
-                if (bleTransfer.hasPendingConfig) {
-                    bleTransfer.flushPendingConfig()
-                }
-
                 val result = try {
                     bleTransfer.startSync(videoDir)
                 } catch (e: SecurityException) {
@@ -147,6 +145,7 @@ class BleSyncService : Service() {
                 }
 
                 result.onSuccess { count ->
+                    notifySyncDone(count)
                     if (count > 0) {
                         CrashLogger.i(TAG, "同步 $count 个文件")
                         try {
@@ -156,6 +155,12 @@ class BleSyncService : Service() {
                             }
                         } catch (e: Exception) {
                             CrashLogger.e(TAG, "注册文件失败", e)
+                        }
+                        // 用本次同步拿到的精确时间戳回填已在库中的旧记录
+                        try {
+                            repository.fixTimestamps(bleTransfer.lastCapturedAt)
+                        } catch (e: Exception) {
+                            CrashLogger.e(TAG, "时间戳回填失败", e)
                         }
                         // 实时模式：同步完成后立刻自动 RPG 分析
                         val isRealtime = apiPreferences.getMode() == "realtime"
@@ -217,6 +222,15 @@ class BleSyncService : Service() {
                 CrashLogger.e(TAG, "转码异常: ${mjpg.name}", e)
             }
         }
+    }
+
+    /** 同步完成后发一条系统通知 */
+    private fun notifySyncDone(count: Int) {
+        val text = if (count > 0) "同步完成: $count 个视频已传输" else "同步完成，无新视频"
+        try {
+            getSystemService(NotificationManager::class.java)
+                .notify(NOTIFICATION_ID + 1, buildNotification(text))
+        } catch (_: Exception) {}
     }
 
     private fun buildNotification(text: String): Notification {        val pendingIntent = PendingIntent.getActivity(

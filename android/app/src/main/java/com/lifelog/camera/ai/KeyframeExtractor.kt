@@ -17,6 +17,7 @@ class KeyframeExtractor @Inject constructor() {
     companion object {
         private const val TAG = "KeyframeEx"
         private const val THUMB_SIZE = 48 // 缩略图尺寸（直方图比较用）
+        private const val MAX_FRAME_DIMENSION = 1280 // 帧提取最大边长，避免 4K 视频 OOM
     }
 
     data class KeyFrames(
@@ -145,13 +146,15 @@ class KeyframeExtractor @Inject constructor() {
                 val timeUs = i * intervalUs
                 val bitmap = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 if (bitmap != null) {
-                    // 保持原始分辨率，不做缩放
+                    // 缩放到最大边长以内，避免 4K 视频全分辨率 Bitmap OOM
+                    val scaled = scaleDownIfNeeded(bitmap, MAX_FRAME_DIMENSION)
+                    if (scaled !== bitmap) bitmap.recycle()
                     val jpeg = ByteArrayOutputStream().use { bos ->
-                        bitmap.compress(Bitmap.CompressFormat.JPEG, 90, bos)
+                        scaled.compress(Bitmap.CompressFormat.JPEG, 90, bos)
                         bos.toByteArray()
                     }
                     frames.add(jpeg)
-                    bitmap.recycle()
+                    scaled.recycle()
                 }
             }
             Log.i(TAG, "MP4 提取 $mp4Path: ${frames.size}/$frameCount 帧")
@@ -250,6 +253,15 @@ class KeyframeExtractor @Inject constructor() {
     }
 
     // ── 私有辅助 ──
+
+    /** 如果任一边长超过 maxDimension，等比缩放到限制内 */
+    private fun scaleDownIfNeeded(bitmap: Bitmap, maxDimension: Int): Bitmap {
+        val w = bitmap.width
+        val h = bitmap.height
+        if (w <= maxDimension && h <= maxDimension) return bitmap
+        val scale = minOf(maxDimension.toFloat() / w, maxDimension.toFloat() / h)
+        return Bitmap.createScaledBitmap(bitmap, (w * scale).toInt(), (h * scale).toInt(), true)
+    }
 
     private fun decodeThumb(jpeg: ByteArray): Bitmap? {
         return try {

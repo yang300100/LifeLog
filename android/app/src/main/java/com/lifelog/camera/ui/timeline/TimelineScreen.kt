@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.lifelog.camera.data.model.PipelineState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,11 +71,11 @@ private fun playClipFile(context: android.content.Context, localPath: String) {
     } catch (_: Exception) {}
 }
 
-/** 启动摄像头同步（尊重实时/日志模式），多处按钮共用 */
-private fun startCameraSync(context: android.content.Context, realtime: Boolean) {
-    val action = if (realtime) BleSyncService.ACTION_START_PERSISTENT
-                 else BleSyncService.ACTION_START_SYNC
-    val intent = Intent(context, BleSyncService::class.java).apply { this.action = action }
+/** 手动触发同步：不管当前模式，直接用一次性的日志模式启动（oneShot=true） */
+private fun startCameraSync(context: android.content.Context) {
+    val intent = Intent(context, BleSyncService::class.java).apply {
+        action = BleSyncService.ACTION_START_SYNC
+    }
     try { context.startForegroundService(intent) } catch (_: Exception) {}
 }
 
@@ -136,12 +137,6 @@ fun TimelineScreen(
         captureLauncher.launch(intent)
     }
 
-    // 页面首次加载时自动启动后台定时同步（每 5 分钟扫一次，与固件拍摄周期对齐）
-    // 如果已在跑，Service 内部会检测并忽略重复启动
-    LaunchedEffect(Unit) {
-        startCameraSync(context, realtime = true)
-    }
-
     // 同步状态变化时显示胶囊
     LaunchedEffect(syncState, isAnalyzing) {
         val isActive = syncState !is BleFileTransfer.SyncState.Idle &&
@@ -169,7 +164,7 @@ fun TimelineScreen(
                     analysisMsg = analysisMsg,
                     analysisError = analysisError,
                     unanalyzed = unanalyzed,
-                    onSync = { startCameraSync(context, viewModel.isRealtimeMode()) },
+                    onSync = { startCameraSync(context) },
                     onAnalyze = { viewModel.runAnalysis() },
                     onReanalyze = { viewModel.reanalyzeAll() }
                 )
@@ -208,7 +203,7 @@ fun TimelineScreen(
                                  syncState is BleFileTransfer.SyncState.Connecting ||
                                  syncState is BleFileTransfer.SyncState.Syncing
                 IconButton(
-                    onClick = { startCameraSync(context, viewModel.isRealtimeMode()) },
+                    onClick = { startCameraSync(context) },
                     enabled = !syncActive,
                     modifier = Modifier.size(40.dp)
                 ) {
@@ -255,7 +250,7 @@ fun TimelineScreen(
                         Spacer(modifier = Modifier.height(20.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Button(
-                                onClick = { startCameraSync(context, false) },
+                                onClick = { startCameraSync(context) },
                                 shape = RoundedCornerShape(16.dp),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = MaterialTheme.colorScheme.primary

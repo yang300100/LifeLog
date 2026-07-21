@@ -211,7 +211,13 @@ class NcnnYOLODetector(
                         input.copyTo(output)
                     }
                 }
-                tmpFile.renameTo(cacheFile)
+                if (!tmpFile.renameTo(cacheFile)) {
+                    // renameTo 可能跨文件系统失败，回退到复制+删除
+                    cacheFile.outputStream().use { out ->
+                        tmpFile.inputStream().use { inp -> inp.copyTo(out) }
+                    }
+                    tmpFile.delete()
+                }
             } catch (e: Exception) {
                 tmpFile.delete()
                 throw e

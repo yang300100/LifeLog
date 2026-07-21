@@ -43,7 +43,7 @@ fun RealtimeRpgHost(
     ) { result ->
         val file = pendingCaptureFile
         if (result.resultCode == android.app.Activity.RESULT_OK && file != null && file.exists() && file.length() > 0) {
-            // RPG 模式下也支持手机拍摄
+            viewModel.onPhoneVideoCaptured(file)
         }
         pendingCaptureFile = null
     }

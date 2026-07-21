@@ -495,6 +495,8 @@ class AnalysisManager @Inject constructor(
         }
 
         CrashLogger.i(TAG, "========== 重新分析今日全部视频 ==========")
+        _isRunning.value = true
+        _lastResult.value = null
         val safeCallback = safeStateCallback(onState)
         job = scope.launch {
             try {
@@ -584,54 +586,68 @@ class AnalysisManager @Inject constructor(
             return
         }
 
-        // Step 3: AI 分析
-        CrashLogger.i(TAG, "发送 AI 分析请求 (${inputs.size} 个视频)...")
-        onState(AnalysisState.Analyzing)
+        // Step 3: AI 分析（分批发送，每批最多 3 个视频，避免超 token 限制）
+        val BATCH_SIZE = 3
+        val allActivities = mutableListOf<AIClient.ActivityResult>()
+        var batchIdx = 0
 
-        val result = aiClient.analyzeActivity(inputs, timestamps, config)
+        for (batchStart in inputs.indices step BATCH_SIZE) {
+            val batchEnd = minOf(batchStart + BATCH_SIZE, inputs.size)
+            val batchInputs = inputs.subList(batchStart, batchEnd)
+            val batchTimes = timestamps.subList(batchStart, batchEnd)
 
-        result.onSuccess { activities ->
-            CrashLogger.i(TAG, "AI 分析成功: ${activities.size} 个活动标签")
-            if (activities.isEmpty()) {
-                CrashLogger.w(TAG, "AI 返回 0 个活动，视频保持未分析状态以便重试")
-                onState(AnalysisState.Error("AI 未识别到活动，请重试"))
-                return
+            batchIdx++
+            CrashLogger.i(TAG, "发送 AI 分析请求 第${batchIdx}批 (${batchInputs.size} 个视频)...")
+            onState(AnalysisState.Analyzing)
+
+            val result = aiClient.analyzeActivity(batchInputs, batchTimes, config)
+
+            result.onSuccess { activities ->
+                CrashLogger.i(TAG, "第${batchIdx}批分析成功: ${activities.size} 个活动")
+                allActivities.addAll(activities)
+            }.onFailure { e ->
+                CrashLogger.e(TAG, "第${batchIdx}批分析失败: ${e.message}")
+                // 单批失败不终止全部，继续下一批
             }
-            // Step 4: 存储结果
-            val labels = activities.mapIndexed { idx, act ->
-                val clipId = validClipIds.getOrElse(idx) { 0L }
-                val clipEntity = clips.find { it.id == clipId }
-                val cal = Calendar.getInstance().apply {
-                    if (clipEntity != null) {
-                        timeInMillis = clipEntity.capturedAt
-                    }
-                    set(Calendar.SECOND, 0)
-                    set(Calendar.MILLISECOND, 0)
-                }
-                val parts = act.time.split(":")
-                if (parts.size == 2) {
-                    cal.set(Calendar.HOUR_OF_DAY, parts[0].toIntOrNull() ?: 0)
-                    cal.set(Calendar.MINUTE, parts[1].toIntOrNull() ?: 0)
-                }
-                ActivityLabelEntity(
-                    clipId = clipId,
-                    timestamp = cal.timeInMillis,
-                    category = act.category,
-                    behavior = act.behavior,
-                    description = act.description,
-                    confidence = act.confidence
-                )
-            }
-            repository.saveLabels(labels)
-            repository.markAnalyzed(validClipIds)
-            CrashLogger.i(TAG, "结果已保存: ${labels.size} 标签, ${validClipIds.size} 视频标记为已分析")
-            onState(AnalysisState.Done(activities.size))
         }
 
-        result.onFailure { e ->
-            CrashLogger.e(TAG, "AI 分析失败: ${e.message}", e)
-            onState(AnalysisState.Error(e.message ?: "AI 分析失败"))
+        // 合并所有批次结果
+        val activities = allActivities
+        if (activities.isEmpty()) {
+            CrashLogger.w(TAG, "所有批次均未识别到活动")
+            onState(AnalysisState.Error("AI 未识别到活动，请重试"))
+            return
         }
+
+        // Step 4: 存储结果
+        val labels = activities.mapIndexed { idx, act ->
+            val clipId = validClipIds.getOrElse(idx) { 0L }
+            val clipEntity = clips.find { it.id == clipId }
+            val cal = Calendar.getInstance().apply {
+                if (clipEntity != null) {
+                    timeInMillis = clipEntity.capturedAt
+                }
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+            val parts = act.time.split(":")
+            if (parts.size == 2) {
+                cal.set(Calendar.HOUR_OF_DAY, parts[0].toIntOrNull() ?: 0)
+                cal.set(Calendar.MINUTE, parts[1].toIntOrNull() ?: 0)
+            }
+            ActivityLabelEntity(
+                clipId = clipId,
+                timestamp = cal.timeInMillis,
+                category = act.category,
+                behavior = act.behavior,
+                description = act.description,
+                confidence = act.confidence
+            )
+        }
+        repository.saveLabels(labels)
+        repository.markAnalyzed(validClipIds)
+        CrashLogger.i(TAG, "结果已保存: ${labels.size} 标签, ${validClipIds.size} 视频标记为已分析")
+        onState(AnalysisState.Done(activities.size))
     }
 
     /** 包装回调：更新持久状态 + 防 UI 销毁异常，确保后台分析继续 */

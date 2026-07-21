@@ -304,10 +304,11 @@ class CompanionPipeline @Inject constructor(
         // 在 step1 的 job 完成后自动续接 step2+step3
         scope.launch {
             job?.join()
-            if (_state.value !is PipelineState.Error) {
+            // 检查管线是否被取消（Idle）或已出错
+            if (_state.value !is PipelineState.Error && _state.value !is PipelineState.Idle) {
                 step2_kimiSelect(customKimiPrompt)
                 job?.join()
-                if (_state.value !is PipelineState.Error) {
+                if (_state.value !is PipelineState.Error && _state.value !is PipelineState.Idle) {
                     step3_seedreamGenerate(customSeedreamPrompt, outputSize)
                 }
             }
@@ -317,13 +318,23 @@ class CompanionPipeline @Inject constructor(
     fun cancel() {
         job?.cancel()
         _isRunning.value = false
-        _annotatedBitmap.value?.recycle()
+
+        // 先置 null 触发 UI recomposition，避免 Compose 渲染已回收的 Bitmap
+        val oldAnnotated = _annotatedBitmap.value
         _annotatedBitmap.value = null
-        cachedSceneBitmap?.recycle()
+        val oldScene = cachedSceneBitmap
         cachedSceneBitmap = null
+
         cachedSceneB64 = ""
         cachedAnnotatedB64 = ""
         updateState(PipelineState.Idle)
+
+        // 延迟回收：确保 UI 已完成 recomposition，不再引用旧 Bitmap
+        scope.launch {
+            delay(100)  // 给 Compose 一帧的时间释放引用
+            oldAnnotated?.recycle()
+            oldScene?.recycle()
+        }
     }
 
     // ── Prompt 编辑 ──

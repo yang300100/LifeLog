@@ -38,8 +38,6 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
     onNavigateToLog: () -> Unit = {}
 ) {
-    val clipCount by viewModel.clipCount.collectAsState()
-    val dirSize by viewModel.videoDirSize.collectAsState()
     val apiBaseUrl by viewModel.apiBaseUrl.collectAsState()
     val apiKey by viewModel.apiKey.collectAsState()
     val apiModel by viewModel.apiModel.collectAsState()
@@ -48,6 +46,13 @@ fun SettingsScreen(
 
     var showKey by remember { mutableStateOf(false) }
     var showSavedAnimation by remember { mutableStateOf(false) }
+    var showStorageManager by remember { mutableStateOf(false) }
+
+    // 存储管理页面全屏覆盖
+    if (showStorageManager) {
+        StorageManagementScreen(onBack = { showStorageManager = false })
+        return
+    }
 
     Column(
         modifier = Modifier
@@ -174,18 +179,6 @@ fun SettingsScreen(
                     }
                 }
             }
-        }
-
-        // ── 存储 ──
-        SectionHeader("存储")
-
-        SettingsCard {
-            SettingsInfoRow("视频总数", "${clipCount} 个")
-            Divider(
-                modifier = Modifier.padding(vertical = 10.dp),
-                color = MaterialTheme.colorScheme.outlineVariant
-            )
-            SettingsInfoRow("存储大小", dirSize)
         }
 
         // ── 运行 & 设备 ──
@@ -405,6 +398,42 @@ fun SettingsScreen(
         }
 
         Spacer(modifier = Modifier.height(4.dp))
+
+        // ── 存储管理 ──
+        SectionHeader("存储管理")
+
+        SettingsCard {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { showStorageManager = true }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.Storage,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text("视频源文件管理", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "删除视频文件释放空间，保留分析记录",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Icon(
+                    Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
 
         // ── 调试 ──
         SectionHeader("调试")

@@ -21,19 +21,25 @@
 #define STATUS_LED_PIN         33    // 与电池 ADC 共用引脚，分时复用
 #define WITH_AUTO_FLASH              // 光线不足时自动开启闪光灯 (GPIO4)
 #define FLASH_GPIO_NUM         4     // 摄像头闪光灯 LED
-#define FLASH_DARK_THRESHOLD   60000  // JPEG 低于此字节数判定为暗光（线上默认，App 可覆写）
+#define FLASH_DARK_THRESHOLD   150    // AEC 曝光行数阈值，超过即判定为暗光（App 可覆写）
 
 // Deep Sleep 唤醒源
 #define SLEEP_WAKEUP_TIMER
 
 // BLE 配置
 #define BLE_DEVICE_NAME_DEFAULT  "lifelog-cam"
-#define BLE_ADV_TIMEOUT_DEFAULT  300000  // 广播窗口 (ms) — 5分钟足够传输全部文件
+#define BLE_ADV_TIMEOUT_DEFAULT  30000   // 广播窗口 (ms) — 30s，配合 PB0A 踢狗机制
 #define BLE_ADV_INTERVAL_DEFAULT 100     // 广播间隔 (ms)
+
+// PB0A 充放电芯片防关机踢狗
+// PB0A 负载 < 50mA 持续 > 32s 自动断电。Deep Sleep 时 ESP32 只吃 4-6mA，
+// 因此每隔 KICK_INTERVAL_MS 唤醒一次（启动电流 ~70mA 踢回 PB0A 计时器）
+#define KICK_INTERVAL_MS        25000   // 踢狗间隔 (ms)，< 32s PB0A 阈值
+#define KICK_MIN_IDLE_MS        30000   // 空闲低于此值不踢狗，直接睡满（< 32s 安全）
 
 // 视频录制默认参数
 #define VIDEO_DURATION_DEFAULT   5000    // 视频时长 (ms)
-#define VIDEO_RESOLUTION_DEFAULT FRAMESIZE_UXGA   // 1600×1200 — OV2640 传感器上限
+#define VIDEO_RESOLUTION_DEFAULT FRAMESIZE_QXGA   // 2048×1536 — OV3660 上限（OV2640 仅支持到 UXGA）
 #define VIDEO_QUALITY_DEFAULT    12      // JPEG 质量 (10-63, 越小画质越好文件越大)
 #define VIDEO_FPS_DEFAULT        3       // 帧率
 

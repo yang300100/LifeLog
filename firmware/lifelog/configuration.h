@@ -9,8 +9,11 @@ struct AppConfig {
     uint8_t  video_resolution;  // framesize_t enum value
     uint8_t  video_quality;     // 10-63
     uint8_t  video_fps;
+    int8_t   sharpness;         // -2~+2 锐度
+    int8_t   contrast;          // -2~+2 对比度
+    int8_t   saturation;        // -2~+2 饱和度
     uint32_t interval;          // ms between captures
-    uint32_t flash_threshold;   // JPEG bytes，低于此值开启闪光灯
+    uint32_t flash_threshold;   // AEC 曝光行数阈值，超过此值判定为暗光开启闪光灯
     uint32_t ble_advertise_timeout;  // ms
     char ble_device_name[32];
     uint16_t ble_adv_interval;  // ms (20/100/500)

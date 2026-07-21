@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.clickable
 import com.lifelog.camera.ble.BleFileTransfer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -38,19 +39,39 @@ fun DeviceConfigPanel(bleTransfer: BleFileTransfer) {
     var fps by remember { mutableIntStateOf(3) }
     var bleTimeoutSec by remember { mutableIntStateOf(300) }
     var bleName by remember { mutableStateOf("lifelog-cam") }
-    var flashThresh by remember { mutableIntStateOf(60000) }
+    var flashThresh by remember { mutableIntStateOf(150) }
+    var sharpness by remember { mutableIntStateOf(1) }
+    var contrast by remember { mutableIntStateOf(0) }
+    var saturation by remember { mutableIntStateOf(0) }
     var initialized by remember { mutableStateOf(false) }
+    var dirty by remember { mutableStateOf(false) }
 
+    /** 从 DeviceInfo 填充所有滑块值 */
+    fun loadFrom(d: BleFileTransfer.DeviceInfo) {
+        intervalMin = d.interval / 60000
+        videoDurationSec = d.videoDuration / 1000
+        resolution = d.videoResolution; quality = d.videoQuality; fps = d.videoFps
+        bleTimeoutSec = d.bleAdvertiseTimeout / 1000; bleName = d.bleDeviceName
+        flashThresh = d.flashThreshold
+        sharpness = d.sharpness; contrast = d.contrast; saturation = d.saturation
+    }
+
+    // 首次加载
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) { info = bleTransfer.readDeviceInfo() }
-        info?.let { d ->
-            intervalMin = d.interval / 60000
-            videoDurationSec = d.videoDuration / 1000
-            resolution = d.videoResolution; quality = d.videoQuality; fps = d.videoFps
-            bleTimeoutSec = d.bleAdvertiseTimeout / 1000; bleName = d.bleDeviceName
-            flashThresh = d.flashThreshold
-        }
+        info?.let { loadFrom(it) }
         initialized = true; loading = false
+    }
+
+    // 监听同步完成事件：硬件配置已更新 → 自动回读，滑块对齐硬件实际值
+    LaunchedEffect(Unit) {
+        bleTransfer.syncCompleted.collectLatest {
+            if (it > 0L) {
+                withContext(Dispatchers.IO) { info = bleTransfer.readDeviceInfo() }
+                info?.let { d -> loadFrom(d); info = d }
+                dirty = false
+            }
+        }
     }
 
     // 不在此处 verticalScroll —— 父级 SettingsScreen 的 Column 已经是滚动容器，
@@ -75,6 +96,7 @@ fun DeviceConfigPanel(bleTransfer: BleFileTransfer) {
                                 resolution = d.videoResolution; quality = d.videoQuality; fps = d.videoFps
                                 bleTimeoutSec = d.bleAdvertiseTimeout / 1000; bleName = d.bleDeviceName
                                 flashThresh = d.flashThreshold
+                                sharpness = d.sharpness; contrast = d.contrast; saturation = d.saturation
                             }
                             loading = false
                         }
@@ -112,14 +134,14 @@ fun DeviceConfigPanel(bleTransfer: BleFileTransfer) {
                 Text("拍摄间隔: ${intervalMin} 分钟", fontWeight = FontWeight.Medium)
                 Text("每段视频之间的等待时间。越短越耗电、文件越多。",
                      style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Slider(value = intervalMin.toFloat(), onValueChange = { intervalMin = it.toInt().coerceIn(1, 60) }, valueRange = 1f..60f)
+                Slider(value = intervalMin.toFloat(), onValueChange = { intervalMin = it.toInt().coerceIn(1, 60); dirty = true }, valueRange = 1f..60f)
                 Spacer(Modifier.height(12.dp))
 
                 // ── 时长 ──
                 Text("录制时长: ${videoDurationSec} 秒", fontWeight = FontWeight.Medium)
                 Text("每段视频的录制长度。更长 = 文件更大、传输更慢。",
                      style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Slider(value = videoDurationSec.toFloat(), onValueChange = { videoDurationSec = it.toInt().coerceIn(1, 30) }, valueRange = 1f..30f)
+                Slider(value = videoDurationSec.toFloat(), onValueChange = { videoDurationSec = it.toInt().coerceIn(1, 30); dirty = true }, valueRange = 1f..30f)
                 Spacer(Modifier.height(12.dp))
 
                 // ── 分辨率 ──
@@ -157,28 +179,49 @@ fun DeviceConfigPanel(bleTransfer: BleFileTransfer) {
                 Text("JPEG 质量: $quality", fontWeight = FontWeight.Medium)
                 Text("数字越小画质越高、文件越大。10=极精细，20=均衡，30=省空间。",
                      style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Slider(value = quality.toFloat(), onValueChange = { quality = it.toInt().coerceIn(10, 30) }, valueRange = 10f..30f)
+                Slider(value = quality.toFloat(), onValueChange = { quality = it.toInt().coerceIn(10, 30); dirty = true }, valueRange = 10f..30f)
                 Spacer(Modifier.height(12.dp))
 
                 // ── 帧率 ──
                 Text("帧率: $fps fps", fontWeight = FontWeight.Medium)
                 Text("每秒录多少帧。3 fps 够日常记录，更高会显著增大文件。",
                      style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Slider(value = fps.toFloat(), onValueChange = { fps = it.toInt().coerceIn(1, 10) }, valueRange = 1f..10f)
+                Slider(value = fps.toFloat(), onValueChange = { fps = it.toInt().coerceIn(1, 10); dirty = true }, valueRange = 1f..10f)
+                Spacer(Modifier.height(12.dp))
+
+                // ── 锐度 ──
+                Text("锐度: ${if (sharpness > 0) "+$sharpness" else "$sharpness"}", fontWeight = FontWeight.Medium)
+                Text("+ = 更锐利细节 / - = 柔焦。生活记录建议 +1~+2。",
+                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Slider(value = sharpness.toFloat(), onValueChange = { sharpness = it.toInt().coerceIn(-2, 2); dirty = true }, valueRange = -2f..2f, steps = 3)
+                Spacer(Modifier.height(12.dp))
+
+                // ── 对比度 ──
+                Text("对比度: ${if (contrast > 0) "+$contrast" else "$contrast"}", fontWeight = FontWeight.Medium)
+                Text("+ = 更通透明暗分明 / - = 更柔和保留细节。",
+                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Slider(value = contrast.toFloat(), onValueChange = { contrast = it.toInt().coerceIn(-2, 2); dirty = true }, valueRange = -2f..2f, steps = 3)
+                Spacer(Modifier.height(12.dp))
+
+                // ── 饱和度 ──
+                Text("饱和度: ${if (saturation > 0) "+$saturation" else "$saturation"}", fontWeight = FontWeight.Medium)
+                Text("+ = 色彩更鲜艳 / - = 更素雅。日常 0~+1，风景可 +2。",
+                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Slider(value = saturation.toFloat(), onValueChange = { saturation = it.toInt().coerceIn(-2, 2); dirty = true }, valueRange = -2f..2f, steps = 3)
                 Spacer(Modifier.height(12.dp))
 
                 // ── 广播窗口 ──
                 Text("广播窗口: $bleTimeoutSec 秒", fontWeight = FontWeight.Medium)
                 Text("设备录完视频后保持可连接的时长。建议 ≥ 60 秒，确保 App 能扫到。越长越耗电。",
                      style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Slider(value = bleTimeoutSec.toFloat(), onValueChange = { bleTimeoutSec = it.toInt().coerceIn(30, 600) }, valueRange = 30f..600f)
+                Slider(value = bleTimeoutSec.toFloat(), onValueChange = { bleTimeoutSec = it.toInt().coerceIn(30, 600); dirty = true }, valueRange = 30f..600f)
                 Spacer(Modifier.height(12.dp))
 
                 // ── 闪光灯灵敏度 ──
-                Text("闪光灯灵敏度: ${flashThresh / 1000}K", fontWeight = FontWeight.Medium)
-                Text("测试帧 JPEG 低于此值自动开闪光灯。越小 = 只在越暗时触发。",
+                Text("闪光灯暗光阈值: ${flashThresh} 行", fontWeight = FontWeight.Medium)
+                Text("AEC 曝光行数超过此值开启闪光灯。越小越暗才触发，越大越灵敏。",
                      style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Slider(value = flashThresh.toFloat(), onValueChange = { flashThresh = it.toInt().coerceIn(20000, 200000) }, valueRange = 20000f..200000f)
+                Slider(value = flashThresh.toFloat(), onValueChange = { flashThresh = it.toInt().coerceIn(50, 300); dirty = true }, valueRange = 50f..300f)
                 Spacer(Modifier.height(12.dp))
 
                 // ── 设备名 ──
@@ -191,17 +234,18 @@ fun DeviceConfigPanel(bleTransfer: BleFileTransfer) {
         }
 
         // ── 保存 ──
-        // 设备平时在 deep sleep，只有同步窗口期才可连；配置暂存到本地，
-        // 下次 BleSyncService 自动同步时在连接建立后第一时间发送
+        val hasPending by bleTransfer.hasPendingConfig.collectAsState()
         Button(
             onClick = {
-                bleTransfer.saveConfig(intervalMin * 60000, videoDurationSec * 1000, resolution, quality, fps, bleTimeoutSec * 1000, bleName, flashThreshold = flashThresh)
+                bleTransfer.saveConfig(intervalMin * 60000, videoDurationSec * 1000, resolution, quality, fps, bleTimeoutSec * 1000, bleName, flashThreshold = flashThresh, sharpness = sharpness, contrast = contrast, saturation = saturation)
+                dirty = false
                 Toast.makeText(context, "已保存，将在下次同步时发送到设备", Toast.LENGTH_SHORT).show()
             },
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp)
+            shape = RoundedCornerShape(14.dp),
+            enabled = !hasPending
         ) {
-            Text("保存（下次同步发送）")
+            Text(if (hasPending) "已保存，等待同步..." else "保存（下次同步发送）")
         }
     }
 }

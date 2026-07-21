@@ -15,6 +15,7 @@
 #include "sd_storage.h"
 #include "configuration.h"
 #include "ble_service.h"
+#include "timebase.h"
 #include "SD_MMC.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
@@ -40,47 +41,52 @@ void led_init() {}
 // RTC 内存变量 — Deep Sleep 唤醒后保留
 RTC_DATA_ATTR uint32_t boot_count = 0;
 RTC_DATA_ATTR uint32_t restart_count = 0;  // 防止无限重启循环
+RTC_DATA_ATTR uint8_t  kicks_remaining = 0; // PB0A 踢狗剩余次数（0=正常录制）
+RTC_DATA_ATTR uint32_t rtc_expected_sleep_ms = 0; // 本次期望休眠时长（ms），醒来后补偿时间基准
+RTC_DATA_ATTR uint64_t rtc_esp_before_sleep = 0;  // 休眠前 esp_timer ms，用于计算实际前进量
 
 AppConfig g_cfg;
 
-// ── 进入 Deep Sleep ──
+// ── 踢狗版 Deep Sleep ──
+// PB0A 充放电芯片：负载 < 50mA 持续 > 32s 自动断电。
+// Deep Sleep 时 ESP32 只吃 4-6mA → 会被 PB0A 断电。
+// 解决方案：空闲 > 30s 时，分段睡眠（每 25s 唤醒一次），
+// 启动时的 ~70mA 电流脉冲把 PB0A 的 32s 计时器踢回去。
 static void enter_deep_sleep() {
-    Serial.printf("[SLEEP] 休眠 %u ms (%.1f min)\n",
-                  g_cfg.interval, g_cfg.interval / 60000.0f);
+    uint32_t elapsed = millis();  // 本次启动已用时间
+    uint32_t interval = g_cfg.interval;
 
-    // 防御性检查：如果间隔太短（<10秒），可能是配置单位用错了，回退到60秒
-    uint64_t sleep_us = (uint64_t)g_cfg.interval * 1000;
-    if (sleep_us < 10000000ULL) {
-        Serial.printf("[SLEEP] 休眠间隔 %llu µs 过短，回退到 60 秒\n", sleep_us);
-        sleep_us = 60 * 1000000ULL;
+    // 计算空闲时间
+    uint32_t idle_ms;
+    if (interval > elapsed) {
+        idle_ms = interval - elapsed;
+    } else {
+        // 本次耗时超过了间隔（BLE 连太久等极端情况），至少睡 1 秒
+        idle_ms = 1000;
     }
 
-    // 释放摄像头资源再休眠（简化硬件无外部 MOSFET，靠 deinit 降低功耗）
+    // 释放摄像头资源
     camera_power_off();
-
-    // SD 卡卸载前多等片刻：sync_done 后的 index.txt 写入 + 文件删除
-    // 可能 SD 卡内部缓存还没落盘 CPU 就断电了，导致 last_synced 丢进度
-    delay(200);
-
-    // SD 卡卸载
+    delay(200);  // SD 缓存落盘
     SD_MMC.end();
 
-    // 配置唤醒定时器
-    esp_err_t wakeup_err = esp_sleep_enable_timer_wakeup(sleep_us);
-    if (wakeup_err != ESP_OK) {
-        Serial.printf("[SLEEP] 唤醒定时器配置失败: 0x%x，回退到 120 秒\n", wakeup_err);
-        esp_err_t fallback_err = esp_sleep_enable_timer_wakeup(120 * 1000000ULL);
-        if (fallback_err != ESP_OK) {
-            Serial.printf("[SLEEP] 回退也失败: 0x%x，5 秒后尝试重启\n", fallback_err);
-            restart_count++;
-            if (restart_count > 5) {
-                Serial.println("[SLEEP] 连续重启超过5次，进入深度休眠60秒...");
-                esp_sleep_enable_timer_wakeup(60 * 1000000ULL);
-                esp_deep_sleep_start();
-            }
-            delay(5000);
-            esp_restart();
-        }
+    // 记录休眠前状态（醒来后 timebase 用这两个值判断是否需要补偿）
+    rtc_expected_sleep_ms = idle_ms;
+    rtc_esp_before_sleep = (uint64_t)(esp_timer_get_time() / 1000);
+
+    if (idle_ms <= KICK_MIN_IDLE_MS) {
+        // 空闲短，PB0A 32s 计时器不会触发，直接睡满
+        Serial.printf("[SLEEP] 空闲 %u ms ≤ 30s, 不踢狗, 直接睡\n", idle_ms);
+        esp_sleep_enable_timer_wakeup((uint64_t)idle_ms * 1000ULL);
+        kicks_remaining = 0;
+    } else {
+        // 空闲长，需要分段踢狗
+        uint8_t kicks = (uint8_t)(idle_ms / KICK_INTERVAL_MS);
+        if (kicks > 30) kicks = 30;  // 安全帽
+        kicks_remaining = kicks;
+        Serial.printf("[SLEEP] 空闲 %u ms → %u 次踢狗, 间隔 %u ms\n",
+                      idle_ms, kicks, KICK_INTERVAL_MS);
+        esp_sleep_enable_timer_wakeup((uint64_t)KICK_INTERVAL_MS * 1000ULL);
     }
 
     Serial.flush();
@@ -88,9 +94,14 @@ static void enter_deep_sleep() {
 }
 
 // ── 录制并存储一段视频 ──
-static bool record_clip(uint16_t clip_id) {
-    char filepath[32];
-    sd_next_filename(clip_id, filepath, sizeof(filepath));
+static bool record_clip(uint32_t clip_id) {
+    char filepath[40];  // /sdcard/YYYYMMDD_HHMMSS.mjpg = 35 + \0
+
+    // 生成文件名：通过 sd_make_filename 与 sd_next_filename 保证格式一致
+    uint64_t record_epoch_ms = 0;
+    if (timebase_is_valid()) record_epoch_ms = timebase_now_ms();
+    else record_epoch_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    sd_make_filename(clip_id, record_epoch_ms, filepath, sizeof(filepath));
 
     led_on();  // 录制中红灯常亮
     Serial.printf("[REC] 录制 %s (%u ms @ %u fps)...\n",
@@ -102,7 +113,6 @@ static bool record_clip(uint16_t clip_id) {
 
     if (frames < 0) {
         Serial.printf("[ERR] 录制失败 code=%d，删除残缺文件\n", frames);
-        // 清理 SD 卡上已部分写入的残缺文件
         remove(filepath);
         return false;
     }
@@ -110,9 +120,18 @@ static bool record_clip(uint16_t clip_id) {
     Serial.printf("[REC] 完成: %d 帧\n", frames);
     led_off();
 
-    // 记录录制时刻（esp_timer 跨 deep sleep 连续走时，
-    // BLE 文件列表用它算相对年龄，手机端还原真实录制时间）
-    sd_clip_ts_write(clip_id, (uint64_t)(esp_timer_get_time() / 1000));
+    // 写入 ID→时间戳 映射（供 sd_next_filename 反查日期文件名 + BLE age 计算）
+    if (record_epoch_ms > 0) {
+        sd_clip_ts_write(clip_id, record_epoch_ms);
+        Serial.printf("[TS-WRITE] clip_%06u → %s\n",
+                      clip_id, filepath + 8);  // 跳过 "/sdcard/" (8字符)
+    } else {
+        // 无时间基准：仍用 esp_timer 记录相对时刻（BLE 列表需要 age 字段）
+        uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
+        sd_clip_ts_write(clip_id, now_ms);
+        Serial.printf("[TS-WRITE] clip_%06u → esp_timer=%llu ms\n",
+                      clip_id, (unsigned long long)now_ms);
+    }
 
     // 更新 SD 卡索引
     if (!sd_index_update_last_id(clip_id)) {
@@ -141,8 +160,8 @@ static void cleanup_old_files() {
 
     Serial.println("[CLEAN] 检测到首次启动，清理 SD 卡旧文件...");
     // 删除所有旧 clip 文件
-    for (uint16_t id = 1; id <= 100; id++) {
-        char fname[32];
+    for (uint32_t id = 1; id <= 100; id++) {
+        char fname[40];
         sd_next_filename(id, fname, sizeof(fname));
         if (remove(fname) == 0) {
             Serial.printf("  已删除: %s\n", fname);
@@ -164,6 +183,22 @@ void setup() {
     delay(100);  // 等待串口稳定
 
     boot_count++;
+
+    // ── 🐶 PB0A 踢狗检测 ──
+    // 这是踢狗唤醒（不是正常录制）→ 只做最小化启动，不碰 SD/摄像头/BLE
+    if (kicks_remaining > 0) {
+        Serial.printf("[KICK] 踢狗唤醒 %d/%d\n", kicks_remaining, kicks_remaining + 1);
+        kicks_remaining--;
+        delay(200);  // 稳定电流 ~70mA，让 PB0A 看清负载脉冲
+        if (kicks_remaining > 0) {
+            // 还有踢狗任务 → 继续睡
+            esp_sleep_enable_timer_wakeup((uint64_t)KICK_INTERVAL_MS * 1000ULL);
+            Serial.flush();
+            esp_deep_sleep_start();
+        }
+        // kicks_remaining == 0 → 踢完了，继续往下走正常录制
+    }
+
     led_init();
     Serial.println();
     Serial.println("╔══════════════════════════════╗");
@@ -202,6 +237,33 @@ void setup() {
                   g_cfg.video_quality,
                   camera_framesize_name(g_cfg.video_resolution),
                   g_cfg.video_fps);
+    Serial.printf("[CFG] 锐度=%d 对比度=%d 饱和度=%d 闪灯阈值=%u行 广播=%us 设备名=%s\n",
+                  (int)g_cfg.sharpness,
+                  (int)g_cfg.contrast,
+                  (int)g_cfg.saturation,
+                  g_cfg.flash_threshold,
+                  g_cfg.ble_advertise_timeout / 1000,
+                  g_cfg.ble_device_name);
+
+    // 3. Deep Sleep 时间补偿：esp_timer 在某些芯片上休眠期间暂停，
+    //    比对期望时长和实际前进量，只补差值（避免双重计数）
+    if (rtc_expected_sleep_ms > 0) {
+        timebase_adjust_for_sleep(rtc_expected_sleep_ms, rtc_esp_before_sleep);
+        rtc_expected_sleep_ms = 0;
+        rtc_esp_before_sleep = 0;
+    }
+
+    // 4. 初始化时间基准（RTC 内存保留 → 决定文件名是否带日期）
+    bool had_timebase = timebase_init();
+
+#ifdef WITH_BLE
+    // 3.5 时间基准无效时，先快速连一次手机获取时间（仅每天首次开机 / RES 后）
+    if (!had_timebase) {
+        Serial.println("[TIME] 无有效时间基准，等待手机同步时间（30 秒窗口）...");
+        // 短超时 BLE：手机连上来同步时间+文件，到点就继续
+        ble_request_time(30000);
+    }
+#endif
 
     // 4. 初始化摄像头（按配置参数）
     Serial.print("[INIT] 摄像头... ");
@@ -216,10 +278,10 @@ void setup() {
     Serial.println("OK");
 
     // 5. 获取下一个视频编号
-    uint16_t last_id = 0, last_synced = 0;
+    uint32_t last_id = 0, last_synced = 0;
     sd_index_read(&last_id, &last_synced);
-    uint16_t next_id = last_id + 1;
-    Serial.printf("[IDX] 下一个视频: clip_%04u.mjpg (已录:%u, 已同步:%u)\n",
+    uint32_t next_id = last_id + 1;
+    Serial.printf("[IDX] 下一个视频: clip_%06u.mjpg (已录:%u, 已同步:%u)\n",
                   next_id, last_id, last_synced);
 
     // 6. 录制视频

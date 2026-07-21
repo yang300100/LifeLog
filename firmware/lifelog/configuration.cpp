@@ -15,6 +15,8 @@ static bool parse_line(const char *line, char *key, size_t key_sz,
     const char *k = p;
     while (*p && *p != '=' && *p != '\n' && *p != '\r') p++;
     size_t klen = p - k;
+    // 去掉 key 末尾的空格（"video_quality " → "video_quality"）
+    while (klen > 0 && (k[klen - 1] == ' ' || k[klen - 1] == '\t')) klen--;
     if (klen >= key_sz) klen = key_sz - 1;
     memcpy(key, k, klen);
     key[klen] = '\0';
@@ -26,6 +28,8 @@ static bool parse_line(const char *line, char *key, size_t key_sz,
     const char *v = p;
     while (*p && *p != '\n' && *p != '\r') p++;
     size_t vlen = p - v;
+    // 去掉 value 末尾的空格和回车
+    while (vlen > 0 && (v[vlen - 1] == ' ' || v[vlen - 1] == '\t' || v[vlen - 1] == '\r')) vlen--;
     if (vlen >= val_sz) vlen = val_sz - 1;
     memcpy(value, v, vlen);
     value[vlen] = '\0';
@@ -39,6 +43,9 @@ void config_set_defaults(AppConfig &cfg) {
     cfg.video_resolution = VIDEO_RESOLUTION_DEFAULT;
     cfg.video_quality = VIDEO_QUALITY_DEFAULT;
     cfg.video_fps = VIDEO_FPS_DEFAULT;
+    cfg.sharpness = 1;      // 默认锐度 +1
+    cfg.contrast  = 0;      // 默认对比度中性
+    cfg.saturation = 0;     // 默认饱和度中性
     cfg.interval = INTERVAL_DEFAULT;
     cfg.flash_threshold = FLASH_DARK_THRESHOLD;
     cfg.ble_advertise_timeout = BLE_ADV_TIMEOUT_DEFAULT;
@@ -99,6 +106,18 @@ bool config_load(const char *filepath, AppConfig &cfg) {
                 cfg.video_fps = VIDEO_FPS_DEFAULT;
             }
         }
+        else if (strcmp(key, "sharpness") == 0) {
+            cfg.sharpness = atoi(value);
+            if (cfg.sharpness < -2 || cfg.sharpness > 2) cfg.sharpness = 0;
+        }
+        else if (strcmp(key, "contrast") == 0) {
+            cfg.contrast = atoi(value);
+            if (cfg.contrast < -2 || cfg.contrast > 2) cfg.contrast = 0;
+        }
+        else if (strcmp(key, "saturation") == 0) {
+            cfg.saturation = atoi(value);
+            if (cfg.saturation < -2 || cfg.saturation > 2) cfg.saturation = 0;
+        }
         else if (strcmp(key, "interval") == 0) {
             cfg.interval = atoi(value);
             if (cfg.interval < 10000 || cfg.interval > 3600000) {
@@ -107,13 +126,13 @@ bool config_load(const char *filepath, AppConfig &cfg) {
         }
         else if (strcmp(key, "flash_threshold") == 0) {
             cfg.flash_threshold = atoi(value);
-            if (cfg.flash_threshold < 10000 || cfg.flash_threshold > 500000) {
+            if (cfg.flash_threshold < 50 || cfg.flash_threshold > 500) {
                 cfg.flash_threshold = FLASH_DARK_THRESHOLD;
             }
         }
         else if (strcmp(key, "ble_advertise_timeout") == 0) {
             cfg.ble_advertise_timeout = atoi(value);
-            if (cfg.ble_advertise_timeout < 5000 || cfg.ble_advertise_timeout > 120000) {
+            if (cfg.ble_advertise_timeout < 5000 || cfg.ble_advertise_timeout > 600000) {
                 cfg.ble_advertise_timeout = BLE_ADV_TIMEOUT_DEFAULT;
             }
         }
@@ -149,6 +168,9 @@ bool config_save(const char *filepath, const AppConfig &cfg) {
             cfg.video_resolution == FRAMESIZE_UXGA ? "UXGA" : "QXGA");
     fprintf(f, "video_quality = %u\n", cfg.video_quality);
     fprintf(f, "video_fps = %u\n", cfg.video_fps);
+    fprintf(f, "sharpness = %d\n", (int)cfg.sharpness);
+    fprintf(f, "contrast = %d\n", (int)cfg.contrast);
+    fprintf(f, "saturation = %d\n", (int)cfg.saturation);
     fprintf(f, "interval = %u\n", cfg.interval);
     fprintf(f, "flash_threshold = %u\n", cfg.flash_threshold);
     fprintf(f, "ble_advertise_timeout = %u\n", cfg.ble_advertise_timeout);

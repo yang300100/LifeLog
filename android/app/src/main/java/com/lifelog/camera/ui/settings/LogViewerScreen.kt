@@ -59,6 +59,9 @@ fun LogViewerScreen(onBack: () -> Unit) {
                     }
                 },
                 actions = {
+                    TextButton(onClick = { showClearDialog = true }) {
+                        Text("清空", color = MaterialTheme.colorScheme.error)
+                    }
                     IconButton(onClick = {
                         val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                             type = "text/plain"
@@ -96,8 +99,8 @@ fun LogViewerScreen(onBack: () -> Unit) {
                 },
                 actions = {
                     if (logFiles.isNotEmpty()) {
-                        IconButton(onClick = { showClearDialog = true }) {
-                            Icon(Icons.Default.Delete, "清空")
+                        TextButton(onClick = { showClearDialog = true }) {
+                            Text("清空", color = MaterialTheme.colorScheme.error)
                         }
                     }
                 }

@@ -28,6 +28,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
@@ -107,7 +108,10 @@ class BleFileTransfer @Inject constructor(
         val bleAdvertiseTimeout: Int = 300000,
         val bleDeviceName: String = "lifelog-cam",
         val bleAdvInterval: Int = 100,
-        val flashThreshold: Int = 60000
+        val flashThreshold: Int = 150,
+        val sharpness: Int = 1,
+        val contrast: Int = 0,
+        val saturation: Int = 0
     )
 
     /** 最近一次同步解析出的文件真实录制时间 (id → epoch ms)，供 Service 注册实体用 */
@@ -175,6 +179,9 @@ class BleFileTransfer @Inject constructor(
             // 每次连接时自动刷新设备信息（电量/SD/配置），设置页面始终看到最新状态
             try { refreshCachedDeviceInfo() } catch (_: Exception) {}
 
+            // 发送当前本地时间（固件用时间基准生成日期文件名 + 计算视频 age）
+            try { sendSyncTime() } catch (_: Exception) {}
+
             val files = requestFileList()
             if (files == null) {
                 // 读取失败 ≠ 没有新文件！不能发 sync_done，直接中止等下次
@@ -204,7 +211,10 @@ class BleFileTransfer @Inject constructor(
             }
             lastCapturedAt = capMap
             val withAge = files.count { it.ageS >= 0 }
-            CrashLogger.i(TAG, "录制时间: ${withAge}/${files.size} 个文件有精确时间戳，其余按间隔估算")
+            // 扒第一个文件的所有关键值出来，一次定位到底断在哪一环
+            val first = files.firstOrNull()
+            CrashLogger.i(TAG, "录制时间: ${withAge}/${files.size} 精确 | " +
+                (if (first != null) "首文件 id=${first.id} ageS=${first.ageS} capturedAt=${capMap[first.id]}" else "无文件"))
 
             // lastContiguous = 连续成功前缀；successIds = 所有成功文件（含不连续）。
             // 补考通过后前沿可以越过它推进，已成功文件不会下周冤枉重传
@@ -269,6 +279,11 @@ class BleFileTransfer @Inject constructor(
                 }
             }
 
+            // 全部视频传输完成后，发送设置页面暂存的配置（下周期生效）
+            // flushPendingConfig 内部会等固件 config_ok 确认，不必再 delay
+            if (hasPendingConfig.value) {
+                flushPendingConfig()
+            }
             sendSyncDone(lastContiguous)
             _state.value = SyncState.Done(transferred)
             CrashLogger.i(TAG, "同步完成: $transferred 个文件")
@@ -546,26 +561,51 @@ class BleFileTransfer @Inject constructor(
     private var writeDeferred: CompletableDeferred<Boolean>? = null
     private var descWriteDeferred: CompletableDeferred<Boolean>? = null
 
-    /** 返回 null = 读取失败（必须区别于「真的没有新文件」，否则会把读取抖动误判成空列表） */
+    /**
+     * 分页拉取完整文件列表。
+     * BLE 特征值硬限 512 字节，每页约 10~12 个文件——
+     * 固件支持 {"cmd":"list","from":N} 分页，循环拉到空为止。
+     * 返回 null = 读取失败。
+     */
     private suspend fun requestFileList(): List<FileEntry>? {
-        for (attempt in 1..2) {
-            CrashLogger.i(TAG, "发送 list 命令...(第${attempt}次)")
-            writeCommand("""{"cmd":"list"}""")
-            // 用 GATT Read 读取文件列表（而非等待 Notification，避免 CCCD 兼容问题）
-            delay(300)  // 等 ESP32 准备好数据
+        val allFiles = mutableListOf<FileEntry>()
+        var nextFrom = 0L
+        var totalNew = Int.MAX_VALUE
+
+        while (allFiles.size < totalNew) {
+            val jsonCmd = if (nextFrom > 0) """{"cmd":"list","from":$nextFrom}""" else """{"cmd":"list"}"""
+            CrashLogger.i(TAG, "发送 list 命令... from=$nextFrom")
+            writeCommand(jsonCmd)
+            delay(300)
+
             val data = gattRead(CHAR_FILE_INDEX)
-            if (data != null && data.isNotEmpty()) {
-                val json = String(data, Charsets.UTF_8)
-                CrashLogger.i(TAG, "读到 list 响应(${data.size}B): ${json.take(200)}")
-                val result = parseFileIndexJson(json)
-                CrashLogger.i(TAG, "解析出 ${result.size} 个文件")
-                return result
+            if (data == null || data.isEmpty()) {
+                CrashLogger.w(TAG, "list 读取失败！GATT Read 返回空 (from=$nextFrom)")
+                return if (allFiles.isEmpty()) null else allFiles  // 已有部分结果
             }
-            // 读到 0 字节 = 固件端 setValue 失败/数据未就绪，绝不能当空列表！
-            CrashLogger.w(TAG, "list 读取为空(第${attempt}次)")
+
+            val json = String(data, Charsets.UTF_8)
+            CrashLogger.i(TAG, "读到 list 响应(${data.size}B): ${json.take(200)}")
+            val page = parseFileIndexJson(json)
+            CrashLogger.i(TAG, "解析出 ${page.size} 个文件 (off=${nextFrom})")
+
+            if (page.isEmpty()) break
+
+            // 首次读取时记下总新文件数，后续分页以此判断是否还需拉
+            if (totalNew == Int.MAX_VALUE) {
+                totalNew = "\"new_count\":(\\d+)".toRegex().find(json)?.groupValues?.get(1)?.toIntOrNull()
+                    ?: page.size
+            }
+
+            allFiles.addAll(page)
+            nextFrom = page.maxOf { it.id }
+
+            // 一页装不满 = 所有文件已列完
+            if (page.size < 10) break
         }
-        CrashLogger.w(TAG, "list 读取失败！GATT Read 连续返回空")
-        return null
+
+        CrashLogger.i(TAG, "文件列表拉取完成: 共 ${allFiles.size} 个文件 ($totalNew 新)")
+        return allFiles
     }
 
     @SuppressLint("MissingPermission")
@@ -622,7 +662,7 @@ class BleFileTransfer @Inject constructor(
 
     @SuppressLint("MissingPermission")
     private suspend fun pullFile(entry: FileEntry, videoDir: File): PullResult {
-        val file = File(videoDir, "clip_%04d.mjpg".format(entry.id))
+        val file = File(videoDir, "clip_%06d.mjpg".format(entry.id))
         var result = PullResult.Failed
 
         // 幂等短路：磁盘上已有完整文件就直接算成功
@@ -788,6 +828,14 @@ class BleFileTransfer @Inject constructor(
         return result
     }
 
+    /** 发送手机本地时间（epoch 毫秒）给固件，用于校准日期文件名和时间戳 */
+    private suspend fun sendSyncTime() {
+        val localEpochMs = System.currentTimeMillis() +
+            java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis())
+        writeCommandAndWait("""{"cmd":"sync_time","local_epoch_ms":$localEpochMs}""")
+        CrashLogger.i(TAG, "已发送本地时间: $localEpochMs")
+    }
+
     private suspend fun sendSyncDone(lastId: Long) {
         writeCommand("""{"cmd":"sync_done","last_id":$lastId}""")
         awaitNotify(CHAR_SYNC_CONTROL, 2000)
@@ -802,8 +850,9 @@ class BleFileTransfer @Inject constructor(
     /** 待发送的配置（用户改完还没同步时暂存，下次同步会话自动发送） */
     private var pendingConfig: String? = null
 
-    /** 是否有待发送的配置 */
-    val hasPendingConfig: Boolean get() = pendingConfig != null
+    /** 是否有待发送的配置（Compose 可观察） */
+    private val _hasPendingConfig = MutableStateFlow(false)
+    val hasPendingConfig: StateFlow<Boolean> = _hasPendingConfig
 
     /** 读取设备状态——优先用缓存（同步时会刷新），无缓存且正好连着设备时尝试实时读 */
     suspend fun readDeviceInfo(): DeviceInfo? {
@@ -829,7 +878,10 @@ class BleFileTransfer @Inject constructor(
         bleAdvertiseTimeout: Int? = null,
         bleDeviceName: String? = null,
         bleAdvInterval: Int? = null,
-        flashThreshold: Int? = null
+        flashThreshold: Int? = null,
+        sharpness: Int? = null,
+        contrast: Int? = null,
+        saturation: Int? = null
     ) {
         val parts = mutableListOf<String>()
         interval?.let { parts.add("\"interval\":$it") }
@@ -841,17 +893,33 @@ class BleFileTransfer @Inject constructor(
         bleDeviceName?.let { parts.add("\"ble_device_name\":\"${it.replace("\\", "\\\\").replace("\"", "\\\"")}\"") }
         bleAdvInterval?.let { parts.add("\"ble_adv_interval\":$it") }
         flashThreshold?.let { parts.add("\"flash_threshold\":$it") }
+        sharpness?.let { parts.add("\"sharpness\":$it") }
+        contrast?.let { parts.add("\"contrast\":$it") }
+        saturation?.let { parts.add("\"saturation\":$it") }
         if (parts.isEmpty()) return
         pendingConfig = """{"cmd":"config",${parts.joinToString(",")}}"""
+        _hasPendingConfig.value = true
         CrashLogger.i(TAG, "配置已暂存: ${pendingConfig!!.take(200)}")
     }
 
-    /** 发送暂存的配置（同步会话中调用），成功返回 true */
+    /** 同步完成计数（设置页面监听此值，同步后自动回读硬件实际值） */
+    private val _syncCompleted = MutableStateFlow(0L)
+    val syncCompleted: StateFlow<Long> = _syncCompleted.asStateFlow()
+
+    /** 发送暂存的配置（同步会话中调用），等固件 config_ok 确认后返回 */
     suspend fun flushPendingConfig(): Boolean {
         val json = pendingConfig ?: return false
         if (!writeCommandAndWait(json)) return false
+        // 等固件处理完 config（SD 写 camera.cfg 可能慢），收到 config_ok 确认才算成功
+        val ack = awaitNotify(CHAR_SYNC_CONTROL, timeoutMs = 5000)
+        if (ack == null) {
+            CrashLogger.w(TAG, "config 命令已发送但未收到固件确认")
+            return false
+        }
         pendingConfig = null
-        CrashLogger.i(TAG, "配置已发送到设备")
+        _hasPendingConfig.value = false
+        _syncCompleted.value = System.currentTimeMillis()
+        CrashLogger.i(TAG, "配置已发送到设备并确认")
         return true
     }
 
@@ -888,7 +956,10 @@ class BleFileTransfer @Inject constructor(
             bleAdvertiseTimeout = int("ble_advertise_timeout"),
             bleDeviceName = str("ble_device_name"),
             bleAdvInterval = int("ble_adv_interval"),
-            flashThreshold = int("flash_threshold")
+            flashThreshold = int("flash_threshold"),
+            sharpness = int("sharpness"),
+            contrast = int("contrast"),
+            saturation = int("saturation")
         )
     }
 }

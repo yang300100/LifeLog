@@ -44,19 +44,40 @@ bool camera_init(const AppConfig &cfg) {
         config.grab_mode = CAMERA_GRAB_LATEST;
     }
 
+    // ── Camera 硬件复位：PWDN 拉高→延时→拉低，确保 Sensor 进入已知状态 ──
+    // 解决 BLE deinit 后或 deep sleep 唤醒后偶发的 I2C 总线挂死问题
+    gpio_set_direction((gpio_num_t)PWDN_GPIO_NUM, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)PWDN_GPIO_NUM, 1);   // 断电
+    delay(50);
+    gpio_set_level((gpio_num_t)PWDN_GPIO_NUM, 0);   // 上电
+    delay(100);  // 等 Sensor 内部 LDO 稳定 + 寄存器就绪
+
     esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK) return false;
 
     sensor_t *s = esp_camera_sensor_get();
     if (s != nullptr) {
-        if (s->id.PID == OV2640_PID) {
-            s->set_vflip(s, 1);
-            s->set_brightness(s, 1);
-            s->set_saturation(s, -2);
-        } else if (s->id.PID == OV3660_PID) {
-            s->set_vflip(s, 1);
-            s->set_brightness(s, 0);
-            s->set_saturation(s, 0);
+        // ── 垂直翻转（OV3660 模块物理倒装）──
+        s->set_vflip(s, 1);
+
+        // ── 自动控制显式开启（默认已开，加保险）──
+        if (s->set_exposure_ctrl) s->set_exposure_ctrl(s, 1);
+        if (s->set_gain_ctrl)     s->set_gain_ctrl(s, 1);
+        if (s->set_whitebal)      s->set_whitebal(s, 1);
+
+        // ── 画质优化 ──
+        if (s->set_lenc)      s->set_lenc(s, 1);      // 镜头暗角补偿
+        if (s->set_raw_gma)   s->set_raw_gma(s, 1);   // Gamma 校正
+        // 锐度/对比度/饱和度从 AppConfig 读取（支持手机端远程调参）
+        if (s->set_sharpness) s->set_sharpness(s, cfg.sharpness);
+        if (s->set_contrast)  s->set_contrast(s, cfg.contrast);
+        if (s->set_saturation) s->set_saturation(s, cfg.saturation);
+
+        // ── 垂直翻转 + 亮度 ──
+        if (s->set_vflip) s->set_vflip(s, 1);
+        if (s->set_brightness) {
+            if (s->id.PID == OV2640_PID) s->set_brightness(s, 1);
+            else                          s->set_brightness(s, 0);
         }
     }
 
@@ -72,36 +93,35 @@ int camera_capture_video(const char *filepath,
         fps = 5;
     }
 
-    // ── 自动闪光灯：录制前取帧采样亮度 ──
-    // 第一帧是传感器上电"盲帧"→ 曝光还没收敛，不能用来判光 → 丢弃
+    // ── 自动闪光灯：读传感器 AEC 曝光寄存器判定亮度 ──
     bool flash_on = false;
 #ifdef WITH_AUTO_FLASH
     gpio_set_direction(GPIO_NUM_4, GPIO_MODE_OUTPUT);
     gpio_set_level(GPIO_NUM_4, 0);
-    // 丢一帧让传感器曝光稳定
-    camera_fb_t *discard = esp_camera_fb_get();
-    if (discard) esp_camera_fb_return(discard);
-    delay(120);  // 等传感器 AEC/AWB 收敛
-    // 取两帧样本，用较大者判光 —— 避免单帧瞬时波动误触发
-    size_t max_len = 0;
-    for (int s = 0; s < 2; s++) {
-        camera_fb_t *test = esp_camera_fb_get();
-        if (test) {
-            if (test->len > max_len) max_len = test->len;
-            esp_camera_fb_return(test);
-            if (s == 0) delay(80);
-        }
+
+    sensor_t *s = esp_camera_sensor_get();
+    if (s != nullptr && s->get_reg != nullptr) {
+        // 喂一帧触发 AEC 统计收敛
+        camera_fb_t *warm = esp_camera_fb_get();
+        if (warm) esp_camera_fb_return(warm);
+        delay(100);
+
+        // OV3660 / OV2640: 读 AEC 粗积分时间寄存器（0x350A 高字节, 0x350B 低字节）
+        // 曝光行数越高 = 场景越暗
+        int exp_h = s->get_reg(s, 0x350A, 0xFF);
+        int exp_l = s->get_reg(s, 0x350B, 0xFF);
+        int exp_val = (exp_h << 8) | exp_l;
+        flash_on = (exp_val > (int)g_cfg.flash_threshold);
+        Serial.printf("[CAM] AEC曝光=%d行 (阈值=%u) → %s闪光灯\n",
+                      exp_val, g_cfg.flash_threshold, flash_on ? "开" : "不开");
+    } else {
+        Serial.println("[CAM] get_reg 不可用，跳过闪光灯判定");
     }
-    if (max_len > 0 && max_len < g_cfg.flash_threshold) {
+
+    if (flash_on) {
         gpio_set_level(GPIO_NUM_4, 1);
-        flash_on = true;
-        Serial.printf("[CAM] 暗光检测 (max_JPEG=%u < %u)，开启闪光灯\n",
-                      max_len, g_cfg.flash_threshold);
-    } else if (max_len > 0) {
-        Serial.printf("[CAM] 光线充足 (max_JPEG=%u >= %u)\n",
-                      max_len, g_cfg.flash_threshold);
+        delay(80);  // LED 点亮后给传感器一瞬调整曝光
     }
-    if (flash_on) delay(80);  // LED 点亮后给传感器一瞬调整曝光
 #endif
 
     FILE *f = fopen(filepath, "wb");

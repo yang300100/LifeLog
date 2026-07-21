@@ -4,6 +4,7 @@
 #include "config.h"
 #include "configuration.h"
 #include "camera.h"
+#include "timebase.h"
 #include <NimBLEDevice.h>
 #include <esp_camera.h>
 #include <esp_timer.h>
@@ -46,7 +47,8 @@ static int   g_files_sent     = 0;
 static volatile bool g_cmd_pending = false;
 static char   g_cmd_type[16];
 static char   g_cmd_json[512];  // 原始 JSON（config 等复杂命令需要完整内容）
-static uint16_t g_cmd_file_id;
+static uint32_t g_cmd_file_id;
+static uint32_t g_cmd_from;       // list 命令分页：只列 id > from 的文件
 static uint32_t g_cmd_offset;
 static uint16_t g_cmd_chunk_size;
 static uint16_t g_cmd_max_chunks;  // 窗口化推送：每次 pull 最多发几块，0=不限
@@ -69,19 +71,39 @@ static int json_get_int(const char *json, const char *key, int default_val) {
     return atoi(p);
 }
 
+// 64-bit 版（epoch 毫秒等大整数用）
+static int64_t json_get_int64(const char *json, const char *key, int64_t default_val) {
+    char search[32];
+    snprintf(search, sizeof(search), "\"%s\":", key);
+    const char *p = strstr(json, search);
+    if (!p) return default_val;
+    if (p > json) {
+        char prev = *(p - 1);
+        if (prev != '{' && prev != ',' && prev != ' ' && prev != '\t' && prev != '\n')
+            return default_val;
+    }
+    p += strlen(search);
+    while (*p == ' ' || *p == '\t') p++;
+    return (int64_t)atoll(p);
+}
+
 // ── 构建文件列表 JSON ──
-static void build_file_list_json(char *buf, size_t bufsz) {
-    uint16_t last_id, last_synced;
+// from_id: 分页起点，只列 id > from_id 的文件（0 = 全部）
+static void build_file_list_json(char *buf, size_t bufsz, uint32_t from_id) {
+    uint32_t last_id, last_synced;
     sd_index_read(&last_id, &last_synced);
 
-    // 发送同步状态 + 新文件列表
-    uint16_t new_count = last_id - last_synced;
+    uint32_t new_count = last_id - last_synced;
+    uint32_t start_id = from_id > last_synced ? from_id : last_synced;
     int pos = snprintf(buf, bufsz,
-        "{\"status\":\"ready\",\"new_count\":%u,\"files\":[", new_count);
+        "{\"status\":\"ready\",\"new_count\":%u,\"from\":%u,\"files\":[",
+        new_count, start_id);
 
+    int files_with_age = 0;
+    int files_total = 0;
     bool first = true;
-    for (uint16_t id = last_synced + 1; id <= last_id; id++) {
-        char fname[32];
+    for (uint32_t id = start_id + 1; id <= last_id; id++) {
+        char fname[40];
         sd_next_filename(id, fname, sizeof(fname));
 
         FILE *f = fopen(fname, "rb");
@@ -92,20 +114,34 @@ static void build_file_list_json(char *buf, size_t bufsz) {
             fclose(f);
         }
 
-        // 相对年龄（秒）：esp_timer 跨 deep sleep 连续，
-        // 手机端用「当前时间 - age」还原真实录制时间；无记录的旧文件不带该字段
+        // 相对年龄（秒）：手机端用「当前时间 - age」还原录制时间
+        //
+        // clip_ts.txt 存的值有两种时间域：
+        //   - 本地 epoch ms (> 1e12) — timebase 有效时，精确年龄
+        //   - esp_timer ms (< 1e9) — timebase 无效时，相对年龄
+        // 需要根据值的大小选择对应的参考时钟来计算 age。
+        //
+        // 注意：RES/断电后 RTC 归零 + timebase 丢失，旧文件的 esp_timer 时间戳
+        // 大于当前 esp_timer，age 算不出来 → 不传 age 字段，手机端估算。
         uint64_t ts = sd_clip_ts_read(id);
-        bool has_age = ts > 0;
+        bool has_age = false;
         uint32_t age_s = 0;
-        if (has_age) {
-            uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
-            age_s = (uint32_t)(now_ms > ts ? (now_ms - ts) / 1000 : 0);
+        if (ts > 0) {
+            uint64_t now_ref;
+            if (timebase_is_epoch_ts(ts) && timebase_is_valid()) {
+                // 本地 epoch 域：和时间基准对齐
+                now_ref = timebase_now_ms();
+            } else {
+                // esp_timer 域（毫秒自开机，跨 deep sleep 连续）
+                now_ref = (uint64_t)(esp_timer_get_time() / 1000);
+            }
+            if (now_ref > ts) {
+                age_s = (uint32_t)((now_ref - ts) / 1000);
+                has_age = true;
+                files_with_age++;
+            }
         }
-        // 诊断日志：每次列表时打一条，确认年龄解析在固件端是活的
-        if (id == last_synced + 1) {
-            Serial.printf("[TS] 首文件 id=%u age=%us (ts=%llu)\n",
-                          id, age_s, (unsigned long long)ts);
-        }
+        files_total++;
 
         // 防御 buffer 溢出（带年龄的条目最长约 48 字节，留 60 字节余量）
         // 到上限就停止追加：列表宁缺毋滥，剩下的文件下周期的列表里再见
@@ -127,11 +163,14 @@ static void build_file_list_json(char *buf, size_t bufsz) {
     }
     // 安全写入结尾
     pos += snprintf(buf + pos, bufsz - pos, "]}");
+
+    Serial.printf("[TS-LIST] from=%u: %d/%d 文件有录制时间戳\n",
+                  start_id, files_with_age, files_total);
 }
 
 // ── 设备信息 JSON ──
 static void build_device_info_json(char *buf, size_t bufsz) {
-    uint16_t last_id, last_synced;
+    uint32_t last_id, last_synced;
     sd_index_read(&last_id, &last_synced);
     int bat = battery_percent();
     int pos = snprintf(buf, bufsz,
@@ -150,6 +189,9 @@ static void build_device_info_json(char *buf, size_t bufsz) {
         "\"video_resolution\":\"%s\","
         "\"video_quality\":%u,"
         "\"video_fps\":%u,"
+        "\"sharpness\":%d,"
+        "\"contrast\":%d,"
+        "\"saturation\":%d,"
         "\"flash_threshold\":%u,"
         "\"ble_advertise_timeout\":%u,"
         "\"ble_device_name\":\"%s\","
@@ -159,6 +201,9 @@ static void build_device_info_json(char *buf, size_t bufsz) {
         camera_framesize_name(g_cfg.video_resolution),
         g_cfg.video_quality,
         g_cfg.video_fps,
+        (int)g_cfg.sharpness,
+        (int)g_cfg.contrast,
+        (int)g_cfg.saturation,
         g_cfg.flash_threshold,
         g_cfg.ble_advertise_timeout,
         g_cfg.ble_device_name,
@@ -174,7 +219,7 @@ static void build_device_info_json(char *buf, size_t bufsz) {
 
 // ── 发送 EOF 通知（带重试）──
 // EOF 丢失会让手机干等 15 秒超时，所以和数据块一样需要背压重试
-static bool send_eof(uint16_t file_id) {
+static bool send_eof(uint32_t file_id) {
     char buf[64];
     int len = snprintf(buf, sizeof(buf), "{\"eof\":true,\"file_id\":%u}", file_id);
     pFileTransfer->setValue((uint8_t*)buf, len);
@@ -206,13 +251,13 @@ static void process_command() {
         // 超出的包会被底层静默丢弃但 notify() 依然返回 true（"假成功"），
         // 手机端只能收到流头几块。限窗后在途包永远 <= max_chunks，
         // 任何一层丢包都会被手机的 offset 校验发现并立刻续传。
-        uint16_t file_id    = g_cmd_file_id;
+        uint32_t file_id    = g_cmd_file_id;
         uint32_t offset     = g_cmd_offset;
         uint16_t max_chunks = g_cmd_max_chunks;  // 0 = 不限（兼容旧手机端）
         Serial.printf("[BLE-CMD] pull: file=%u offset=%u win=%u\n",
                       file_id, offset, max_chunks);
 
-        char fname[32];
+        char fname[40];
         sd_next_filename(file_id, fname, sizeof(fname));
         FILE *f = fopen(fname, "rb");
         if (!f) {
@@ -249,7 +294,8 @@ static void process_command() {
             // 块格式: [4B id LE][4B offset LE][2B len LE][data...]
             full[0] = file_id & 0xFF;
             full[1] = (file_id >> 8) & 0xFF;
-            full[2] = 0; full[3] = 0;
+            full[2] = (file_id >> 16) & 0xFF;
+            full[3] = (file_id >> 24) & 0xFF;
             full[4] = (offset + sent) & 0xFF;
             full[5] = ((offset + sent) >> 8) & 0xFF;
             full[6] = ((offset + sent) >> 16) & 0xFF;
@@ -330,11 +376,20 @@ static void process_command() {
         ival = json_get_int(cfgJson, "video_fps", -1);
         if (ival >= 1 && ival <= 30) newCfg.video_fps = (uint8_t)ival;
 
+        ival = json_get_int(cfgJson, "sharpness", -99);
+        if (ival >= -2 && ival <= 2) newCfg.sharpness = (int8_t)ival;
+
+        ival = json_get_int(cfgJson, "contrast", -99);
+        if (ival >= -2 && ival <= 2) newCfg.contrast = (int8_t)ival;
+
+        ival = json_get_int(cfgJson, "saturation", -99);
+        if (ival >= -2 && ival <= 2) newCfg.saturation = (int8_t)ival;
+
         ival = json_get_int(cfgJson, "ble_advertise_timeout", -1);
         if (ival >= 5000 && ival <= 600000) newCfg.ble_advertise_timeout = (uint32_t)ival;
 
         ival = json_get_int(cfgJson, "flash_threshold", -1);
-        if (ival >= 10000 && ival <= 500000) newCfg.flash_threshold = (uint32_t)ival;
+        if (ival >= 50 && ival <= 500) newCfg.flash_threshold = (uint32_t)ival;
 
         ival = json_get_int(cfgJson, "ble_adv_interval", -1);
         if (ival >= 20 && ival <= 1000) newCfg.ble_adv_interval = (uint16_t)ival;
@@ -384,8 +439,21 @@ static void process_command() {
         pSyncControl->setValue((uint8_t*)ack, strlen(ack));
         pSyncControl->notify();
 
+    } else if (strcmp(cmd, "sync_time") == 0) {
+        // 手机发送当前本地时间 → 固件更新 timebase
+        // JSON: {"cmd":"sync_time","local_epoch_ms":1753000000000}
+        int64_t epoch_ms = json_get_int64(g_cmd_json, "local_epoch_ms", 0);
+        if (epoch_ms > (int64_t)TIMEBASE_EPOCH_THRESHOLD) {  // 起码在 2001 年之后，防垃圾数据
+            timebase_update((uint64_t)epoch_ms);
+            const char *ack = "{\"status\":\"time_ok\"}";
+            pSyncControl->setValue((uint8_t*)ack, strlen(ack));
+            pSyncControl->notify();
+        } else {
+            Serial.println("[BLE-CMD] sync_time: 时间戳无效，已忽略");
+        }
+
     } else if (strcmp(cmd, "sync_done") == 0) {
-        uint16_t last_id = g_cmd_file_id;
+        uint32_t last_id = g_cmd_file_id;
         sd_index_update_last_synced(last_id);
         sd_delete_synced();
 
@@ -394,6 +462,7 @@ static void process_command() {
         pSyncControl->setValue((uint8_t*)resp, strlen(resp));
         pSyncControl->notify();
 
+        __sync_synchronize();
         g_transfer_done = true;
     }
 }
@@ -402,12 +471,13 @@ static void process_command() {
 class ServerCB : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer *srv, NimBLEConnInfo &connInfo) override {
         g_connected = true;
-        // 请求 7.5ms 连接间隔（参数单位 1.25ms）
+        __sync_synchronize();  // 确保主循环立即看到连接状态
         srv->updateConnParams(connInfo.getConnHandle(), 6, 6, 0, 200);
         Serial.println("[BLE] 手机已连接! 请求连接间隔 7.5ms");
     }
     void onDisconnect(NimBLEServer *srv, NimBLEConnInfo &connInfo, int reason) override {
         g_connected = false;
+        __sync_synchronize();
         Serial.printf("[BLE] 手机断开, reason=%d\n", reason);
         // 断开后重新广播（防御已在清理流程中的 nullptr）
         if (!g_transfer_done && pServer != nullptr) {
@@ -424,23 +494,21 @@ class ServerCB : public NimBLEServerCallbacks {
 class FileIndexCB : public NimBLECharacteristicCallbacks {
     void onRead(NimBLECharacteristic *pChar, NimBLEConnInfo &connInfo) override {
         char json[512];
-        build_file_list_json(json, sizeof(json));
-        // 本版本库 setValue 返回 void，无成败可查 —— 所以 512 上限就是生命线，
-        // build_file_list_json 内部的 60 字节余量保证内容绝不会超过它
+        build_file_list_json(json, sizeof(json), g_cmd_from);
         pChar->setValue((uint8_t*)json, strlen(json));
-        Serial.printf("[BLE-READ] 文件列表: %d 字节\n", strlen(json));
+        Serial.printf("[BLE-READ] 文件列表: %d 字节 (from=%u)\n", strlen(json), g_cmd_from);
     }
 };
 
 // ── FileTransfer 读回调（GATT Read 时同步读取文件块）──
 class FileTransferCB : public NimBLECharacteristicCallbacks {
     void onRead(NimBLECharacteristic *pChar, NimBLEConnInfo &connInfo) override {
-        uint16_t file_id = g_cmd_file_id;
+        uint32_t file_id = g_cmd_file_id;
         uint32_t offset  = g_cmd_offset;
         uint16_t chunk   = g_cmd_chunk_size;
         if (chunk > 8192) chunk = 8192;  // 8KB 大块（BLE 长读自动分包）
 
-        char fname[32];
+        char fname[40];
         sd_next_filename(file_id, fname, sizeof(fname));
         FILE *f = fopen(fname, "rb");
         if (!f) {
@@ -472,7 +540,8 @@ class FileTransferCB : public NimBLECharacteristicCallbacks {
             if (pkt) {
                 pkt[0] = file_id & 0xFF;
                 pkt[1] = (file_id >> 8) & 0xFF;
-                pkt[2] = 0; pkt[3] = 0;
+                pkt[2] = (file_id >> 16) & 0xFF;
+                pkt[3] = (file_id >> 24) & 0xFF;
                 pkt[4] = offset & 0xFF;
                 pkt[5] = (offset >> 8) & 0xFF;
                 pkt[6] = (offset >> 16) & 0xFF;
@@ -519,6 +588,10 @@ class SyncControlCB : public NimBLECharacteristicCallbacks {
         memcpy(g_cmd_type, cmd_start, len);
         g_cmd_type[len] = '\0';
 
+        // list 命令：解析分页起点
+        if (strcmp(g_cmd_type, "list") == 0) {
+            g_cmd_from = json_get_int(json, "from", 0);
+        }
         // 提取参数 — 注意 last_id 复用 file_id 字段（sync_done/progress 命令用）
         if (strcmp(g_cmd_type, "sync_done") == 0 || strcmp(g_cmd_type, "progress") == 0) {
             g_cmd_file_id = json_get_int(json, "last_id", 0);
@@ -635,6 +708,7 @@ bool ble_run_sync_session(uint32_t timeout_ms) {
             }
         }
 
+        // 正常同步完成（sync_done）→ 退出
         if (g_transfer_done) break;
 
         delay(5);  // 窗口化传输下命令往返频繁，轮询间隔小一点响应更快
@@ -657,6 +731,14 @@ bool ble_run_sync_session(uint32_t timeout_ms) {
     pDeviceInfo = nullptr;
 
     return g_transfer_done;
+}
+
+// ── 快速时间同步 ──
+// 仅在时间基准无效（每天首次开机 / RES 后）调用。
+// 直接跑一个短超时的正常 BLE 会话：手机连上来发 sync_time（校准时间），
+// 顺便同步昨天的残留文件。不特殊处理 —— 不会截断手机的正常同步流程。
+bool ble_request_time(uint32_t timeout_ms) {
+    return ble_run_sync_session(timeout_ms);
 }
 
 int ble_files_transferred() {

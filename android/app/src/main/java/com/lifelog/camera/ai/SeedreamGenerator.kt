@@ -53,7 +53,8 @@ class SeedreamGenerator @Inject constructor(
         val SEEDREAM_PROMPT_TEMPLATE =
             "将角色自然地呈现在这张场景照片中，{position_desc}，{interaction_desc}。" +
             "角色与场景共享相同的光线环境，自然光的方向、强度与色温保持一致，脚下带有柔和投影。" +
-            "人物边缘与背景光线柔和衔接，轮廓干净自然，与场景融为一体。" +
+            "人物轮廓由自然光线柔和勾勒，边缘像素与周围场景像素平滑过渡，如同原生照片中的景深虚化，" +
+            "无任何可见接缝、分界线、黑边或描边痕迹。" +
             "肤色与服装色调融入场景的色彩氛围，保留皮肤纹理与面料质感的真实细节。" +
             "人物全身可见，双脚踏实地面，比例符合场景透视。" +
             "真实摄影风格，仿佛随手抓拍的生活照片。"
@@ -146,8 +147,23 @@ class SeedreamGenerator @Inject constructor(
             val bmp = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
                 ?: throw Exception("无法解码图片: ${file.name}")
             val bos = java.io.ByteArrayOutputStream()
-            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, bos)
-            bmp.recycle()
+
+            // PNG 有透明通道时，先绘制到白色背景上再压 JPEG
+            // 否则透明区域变黑色，导致 Seedream 生成的人物出现黑边/黑影
+            if (bmp.hasAlpha()) {
+                val solidBmp = android.graphics.Bitmap.createBitmap(
+                    bmp.width, bmp.height, android.graphics.Bitmap.Config.ARGB_8888
+                )
+                val canvas = android.graphics.Canvas(solidBmp)
+                canvas.drawColor(android.graphics.Color.WHITE)
+                canvas.drawBitmap(bmp, 0f, 0f, null)
+                bmp.recycle()
+                solidBmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, bos)
+                solidBmp.recycle()
+            } else {
+                bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, bos)
+                bmp.recycle()
+            }
             bos.toByteArray()
         } else {
             file.readBytes()

@@ -1,0 +1,32 @@
+[
+  {
+    "file": "firmware/lifelog/ble_service.cpp",
+    "line": 288,
+    "summary": "config 命令和 sync_done 共享单槽 g_cmd_pending，delay(150) 是启发式缓解但不可靠——SD 卡异常时 150ms 不够处理 config，sync_done 覆盖命令槽导致配置丢失。",
+    "failure_scenario": "SD 卡写 camera.cfg 变慢（卡老化/碎片）→ 固件主循环 delay(5) 的 30 个周期（150ms）内 config 没处理完 → 手机发 sync_done → onWrite 覆盖 g_cmd_type 和 g_cmd_json → config 永久丢失。应改为固件处理完 config 后主动 notify 确认，手机收到确认再发 sync_done。"
+  },
+  {
+    "file": "firmware/lifelog/sd_storage.cpp",
+    "line": 43,
+    "summary": "atoi 用于解析 uint16_t 的 last_id/last_synced，当 id 超过 32767 时符号溢出返回负数，强制转换为 uint16_t 后变成大数（如 40000 被 atoi 返回 -25536 → (uint16_t)=40000），碰巧正确；但 atoi 在非标准实现上可能不保证行为。",
+    "failure_scenario": "长期使用后 last_id 累积到 40000+ → 固件解析 index.txt 时 atoi 返回 int 负值 → 转换为 uint16_t 时截断 → last_synced 读取错误 → 列表显示错误范围文件。实际 ESP32 上 atoi(\"40000\") 未定义行为。应改用 strtoul。"
+  },
+  {
+    "file": "firmware/lifelog/ble_service.cpp",
+    "line": 41,
+    "summary": "g_connected 和 g_transfer_done 是 volatile bool 但 BLE 回调线程和主循环线程之间没有内存屏障（__sync_synchronize），ESP32 自由 RTOS 调度下主循环可能读到过期值。",
+    "failure_scenario": "手机断开 BLE → NimBLE 回调线程写 g_connected=false → ESP32 CPU 缓存未刷新 → 主循环看到 g_connected=true → pull 循环继续向已断开的连接发包 → notify() 在无订阅者时返回 true（假成功）→ 文件计数增加但数据全丢。"
+  },
+  {
+    "file": "android/app/src/main/java/com/lifelog/camera/ble/BleFileTransfer.kt",
+    "line": 894,
+    "summary": "syncCompleted 暴露为 MutableStateFlow<Long>（非只读 StateFlow），外部可以随意修改同步完成计数，破坏 DeviceConfigPanel 的自动回读机制。",
+    "failure_scenario": "任何持有 bleTransfer 引用的代码执行 bleTransfer.syncCompleted.value = 0L → LaunchedEffect 中 collectLatest 收到 0L 但被 if (it > 0L) 过滤 → 无直接破坏。但若设置为正数 → 触发虚假的\"同步完成\"事件 → DeviceConfigPanel 执行不必要的 loadFrom 刷新。"
+  },
+  {
+    "file": "firmware/lifelog/sd_storage.cpp",
+    "line": 99,
+    "summary": "sd_delete_synced 中 char keep[2048] 栈分配，与 line[48] 等其他局部变量合计 ~2.2KB。ESP32 FreeRTOS 主循环任务栈默认 8KB，当前安全但距离边界较近。后续添加局部变量可能导致栈溢出。",
+    "failure_scenario": "后续代码在此函数或调用链上层增加栈变量 → 累积栈使用超过 8KB → FreeRTOS 栈溢出检测触发（若启用）或静默破坏邻接内存 → 随机崩溃。"
+  }
+]

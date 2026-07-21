@@ -15,8 +15,8 @@ object ImagePostProcessor {
 
     // ── 可调参数 (@Volatile 保证多线程可见性) ──
 
-    /** 高斯柔焦半径 (像素, 默认 1.2 — 模拟镜头柔焦) */
-    @Volatile var blurRadius: Float = 1.2f
+    /** 高斯柔焦半径 (像素, 默认 1.8 — 模拟镜头柔焦，帮助软化人物边缘) */
+    @Volatile var blurRadius: Float = 1.8f
 
     /** 颗粒强度 0~1 (默认 0.10 — 明显胶片质感) */
     @Volatile var grainIntensity: Float = 0.10f
@@ -44,9 +44,11 @@ object ImagePostProcessor {
         val pixels = IntArray(w * h)
         result.getPixels(pixels, 0, w, 0, 0, w, h)
 
-        // ① 高斯柔焦 — 消除 AI 图锐利边缘
+        // ① 高斯柔焦 — 消除 AI 图锐利边缘 + 黑边残留
         if (blurR > 0f) {
-            gaussianBlur(pixels, w, h)
+            // 多次迭代增强柔焦效果：半径>1.5时两次pass，半径<1.0时单次
+            val passes = if (blurR >= 1.5f) 2 else 1
+            repeat(passes) { gaussianBlur(pixels, w, h) }
         }
 
         // ②+③ 色彩调色 + 胶片颗粒 — 单次遍历

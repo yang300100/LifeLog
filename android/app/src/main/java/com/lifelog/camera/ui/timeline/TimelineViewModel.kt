@@ -53,19 +53,24 @@ class TimelineViewModel @Inject constructor(
     }
     fun goToToday() { _selectedDate.update { TimeUtils.getDayStart() } }
 
+    // 使用 flatMapLatest 让选中日期变化时自动切换到对应日期的标签查询
     val todayItems: StateFlow<List<TimelineItem>> = combine(
         repository.getAllClipsFlow(),
-        repository.getLabelsByDateFlow(TimeUtils.getDayStart(), TimeUtils.getDayEnd()),
         dataVersion,
         _selectedDate
-    ) { clips, labels, _, dayStart ->
+    ) { clips, _, dayStart ->
+        dayStart to clips
+    }.flatMapLatest { (dayStart, clips) ->
         val dayEnd = dayStart + 86400000L - 1
-        clips.filter { it.capturedAt in dayStart..dayEnd }.sortedBy { it.capturedAt }.map { clip ->
-            TimelineItem(
-                time = TimeUtils.formatTime(clip.capturedAt),
-                clip = clip,
-                labels = labels.filter { it.clipId == clip.id }
-            )
+        // 动态查询对应日期的标签（而非硬编码今天）
+        repository.getLabelsByDateFlow(dayStart, dayEnd).map { labels ->
+            clips.filter { it.capturedAt in dayStart..dayEnd }.sortedBy { it.capturedAt }.map { clip ->
+                TimelineItem(
+                    time = TimeUtils.formatTime(clip.capturedAt),
+                    clip = clip,
+                    labels = labels.filter { it.clipId == clip.id }
+                )
+            }
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
