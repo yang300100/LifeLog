@@ -50,16 +50,8 @@ android/local.properties
 # Android CMake 构建产物
 android/app/.cxx/
 
-# C7-3-4L 参考资料中的大文件（仅保留源代码）
-C7-3-4L/Arduino IDE*/
-C7-3-4L/*.mp4
-C7-3-4L/*.exe
-C7-3-4L/**/*.mp4
-C7-3-4L/**/*.rar
-C7-3-4L/**/*.zip
-C7-3-4L/**/*.exe
-C7-3-4L/**/*.gif
-C7-3-4L/**/*.png
+# 例程/参考资料（含大文件，不上传）
+例程/
 
 # Android release APK (每次构建都会变)
 android/app/release/
