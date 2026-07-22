@@ -121,12 +121,19 @@ Java_com_lifelog_camera_ai_segmentation_NcnnYOLODetector_nativeDetect(
     env->ReleaseFloatArrayElements(input, data, JNI_ABORT);
 
     ncnn::Extractor ex = net->create_extractor();
-    // 从模型获取实际的 blob 名称 (不同导出方式名称不同)
     const auto& input_names = net->input_names();
     const auto& output_names = net->output_names();
     const char* in_name = input_names.empty() ? "images" : input_names[0];
     const char* out_name = output_names.empty() ? "output0" : output_names[0];
-    LOGI("使用 blob: in=%s out=%s", in_name, out_name);
+
+    // 详细的 blob 维度信息 — 帮助诊断模型兼容性
+    LOGI("blob诊断: in_name='%s' out_name='%s'", in_name, out_name);
+    LOGI("blob诊断: input_names 共%zu个:", input_names.size());
+    for (size_t i = 0; i < input_names.size(); i++)
+        LOGI("  input[%zu]='%s'", i, input_names[i]);
+    LOGI("blob诊断: output_names 共%zu个:", output_names.size());
+    for (size_t i = 0; i < output_names.size(); i++)
+        LOGI("  output[%zu]='%s'", i, output_names[i]);
 
     ex.input(in_name, in);
 
@@ -134,20 +141,22 @@ Java_com_lifelog_camera_ai_segmentation_NcnnYOLODetector_nativeDetect(
     int ret = ex.extract(out_name, out);
     if (ret != 0) { LOGE("推理失败: extract(%s)=%d", out_name, ret); return nullptr; }
 
-    LOGI("推理完成: w=%d h=%d c=%d dims=%d", out.w, out.h, out.c, out.dims);
+    LOGI("推理完成: w=%d h=%d c=%d dims=%d total=%ld elemsize=%ld",
+         out.w, out.h, out.c, out.dims,
+         (long)(out.w * out.h * out.c), (long)out.elemsize);
 
-    // NCNN 3D Mat 布局: [1, C, N] → c=C(通道), w=N(proposals), h=1
-    // out.channel(c) 返回 1×N 的 2D Mat, [i] 取第 i 个 proposal
+    // NCNN 3D Mat 布局: [1, C, N] → w=N(proposals), h=C(通道), c=1
+    // 数据按行排列: out.row(c) 返回第 c 个通道的 N 个 float
     const int num_proposals = out.w;     // 8400
-    const int num_channels = out.c;      // 116 (或 84)
+    const int num_channels = out.h;      // 116 (w=N, h=C, c=1 时通道在 h 维)
     const int real_classes = std::min(num_channels - 4, 80);
     LOGI("解析: proposals=%d channels=%d classes=%d",
          num_proposals, num_channels, real_classes);
 
-    // 预读取所有通道数据 (避免 repeated channel() 调用)
+    // 预读取所有行 (每行 = 一个通道的全部 proposal 数据)
     std::vector<const float*> channels(num_channels);
     for (int c = 0; c < num_channels; c++) {
-        channels[c] = out.channel(c);
+        channels[c] = out.row(c);
     }
 
     std::vector<Detection> proposals;
@@ -184,4 +193,48 @@ Java_com_lifelog_camera_ai_segmentation_NcnnYOLODetector_nativeDetect(
         env->DeleteLocalRef(row);
     }
     return result;
+}
+
+// ═══════════════════════════════════════════════════
+// 诊断: 返回模型 blob 信息 (供 App 日志查看)
+// ═══════════════════════════════════════════════════
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_lifelog_camera_ai_segmentation_NcnnYOLODetector_nativeGetBlobInfo(
+    JNIEnv* env, jobject, jlong netPtr) {
+
+    auto* net = reinterpret_cast<ncnn::Net*>(netPtr);
+    if (!net) return env->NewStringUTF("net=null");
+
+    std::string info;
+    info += "input: ";
+    const auto& in_names = net->input_names();
+    for (size_t i = 0; i < in_names.size(); i++) {
+        if (i > 0) info += ", ";
+        info += in_names[i];
+    }
+    info += " | output: ";
+    const auto& out_names = net->output_names();
+    for (size_t i = 0; i < out_names.size(); i++) {
+        if (i > 0) info += ", ";
+        info += out_names[i];
+    }
+    // 从实际推理获取维度 (走一次 extract 看结果)
+    ncnn::Extractor ex = net->create_extractor();
+    ncnn::Mat in(640, 640, 3);
+    in.fill(0.0f);  // 清零，避免未初始化内存传入推理
+    ex.input(in_names.empty() ? "images" : in_names[0], in);
+    ncnn::Mat out;
+    const char* out_name = out_names.empty() ? "output0" : out_names[0];
+    int ret = ex.extract(out_name, out);
+    if (ret == 0) {
+        info += " | output0 dims: w=" + std::to_string(out.w)
+             + " h=" + std::to_string(out.h)
+             + " c=" + std::to_string(out.c)
+             + " elemsize=" + std::to_string(out.elemsize);
+    } else {
+        info += " | extract failed: " + std::to_string(ret);
+    }
+    return env->NewStringUTF(info.c_str());
 }

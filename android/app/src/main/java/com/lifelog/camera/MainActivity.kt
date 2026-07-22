@@ -16,7 +16,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.lifelog.camera.ble.BleSyncService
@@ -60,11 +59,21 @@ class MainActivity : ComponentActivity() {
             permissionLauncher.launch(missing.toTypedArray())
         }
 
+        // 启动后台 BLE 同步服务（Activity 层，不依赖 Compose 生命周期）
+        startBleSyncService()
+
         setContent {
             LifeLogTheme {
                 LifeLogNavHost()
             }
         }
+    }
+
+    private fun startBleSyncService() {
+        val intent = Intent(this, BleSyncService::class.java).apply {
+            action = BleSyncService.ACTION_START_PERSISTENT
+        }
+        try { startForegroundService(intent) } catch (_: Exception) {}
     }
 }
 
@@ -73,24 +82,15 @@ fun LifeLogNavHost() {
     var currentPage by remember { mutableIntStateOf(0) }
     var showLogViewer by remember { mutableStateOf(false) }
     val pagerState = rememberPagerState(pageCount = { 3 })
-    val context = LocalContext.current
 
-    // App 启动时触发一次后台同步（只一次，切页不会重新触发）
-    LaunchedEffect(Unit) {
-        val intent = Intent(context, BleSyncService::class.java).apply {
-            action = BleSyncService.ACTION_START_SYNC
-        }
-        try { context.startForegroundService(intent) } catch (_: Exception) {}
-    }
+    // 监听 SettingsViewModel 的实时模式状态（切换后自动刷新 UI）
+    val settingsViewModel: com.lifelog.camera.ui.settings.SettingsViewModel = hiltViewModel()
+    val isRealtime by settingsViewModel.isRealtimeMode.collectAsState()
 
     // 返回键/侧滑返回：不是首页就切到前一页，是首页交给系统（最小化 App）
     BackHandler(enabled = currentPage > 0) {
         currentPage = currentPage - 1
     }
-
-    // 监听 SettingsViewModel 的实时模式状态（切换后自动刷新 UI）
-    val settingsViewModel: com.lifelog.camera.ui.settings.SettingsViewModel = hiltViewModel()
-    val isRealtime by settingsViewModel.isRealtimeMode.collectAsState()
 
     val navItems = if (isRealtime) rpgNavItems else diaryNavItems
 

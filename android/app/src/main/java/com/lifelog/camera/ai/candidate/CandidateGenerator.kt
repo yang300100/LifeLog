@@ -83,38 +83,44 @@ class CandidateGenerator(
 
     /** 全部构图锚点，按优先级排列 */
     private val anchors: List<CompositionAnchor> = listOf(
-        // ── 三分法构图 (Rule of Thirds) ──
+        // ── 三分法构图 — 九宫格 4 交点 ──
+        CompositionAnchor(1f/3, 1f/3, "九宫格左上交点", CompositionStyle.RULE_OF_THIRDS, 0),
+        CompositionAnchor(2f/3, 1f/3, "九宫格右上交点", CompositionStyle.RULE_OF_THIRDS, 0),
         CompositionAnchor(1f/3, 2f/3, "九宫格左下交点", CompositionStyle.RULE_OF_THIRDS, 0),
         CompositionAnchor(2f/3, 2f/3, "九宫格右下交点", CompositionStyle.RULE_OF_THIRDS, 0),
-        CompositionAnchor(1f/3, 1f/3, "九宫格左上交点", CompositionStyle.RULE_OF_THIRDS, 2),
-        CompositionAnchor(2f/3, 1f/3, "九宫格右上交点", CompositionStyle.RULE_OF_THIRDS, 2),
 
-        // ── 黄金分割构图 (Golden Ratio, φ≈0.618) ──
+        // ── 黄金分割 — φ≈0.618, 4 交点 ──
+        CompositionAnchor(0.382f, 0.382f, "黄金分割左上点", CompositionStyle.GOLDEN_RATIO, 1),
+        CompositionAnchor(0.618f, 0.382f, "黄金分割右上点", CompositionStyle.GOLDEN_RATIO, 1),
         CompositionAnchor(0.382f, 0.618f, "黄金分割左下点", CompositionStyle.GOLDEN_RATIO, 1),
         CompositionAnchor(0.618f, 0.618f, "黄金分割右下点", CompositionStyle.GOLDEN_RATIO, 1),
-        CompositionAnchor(0.382f, 0.382f, "黄金分割左上点", CompositionStyle.GOLDEN_RATIO, 3),
-        CompositionAnchor(0.618f, 0.382f, "黄金分割右上点", CompositionStyle.GOLDEN_RATIO, 3),
 
-        // ── 对称构图 (Symmetry) ──
-        CompositionAnchor(0.5f, 2f/3, "中轴偏下", CompositionStyle.SYMMETRY, 1),
-        CompositionAnchor(0.5f, 0.5f, "画面正中", CompositionStyle.SYMMETRY, 3),
+        // ── 对称构图 ──
+        CompositionAnchor(0.5f, 1f/3, "中轴偏上", CompositionStyle.SYMMETRY, 2),
+        CompositionAnchor(0.5f, 0.5f, "画面正中", CompositionStyle.SYMMETRY, 1),
+        CompositionAnchor(0.5f, 2f/3, "中轴偏下", CompositionStyle.SYMMETRY, 2),
 
-        // ── 对角线构图 (Diagonal) ──
-        // 沿左上→右下对角线
-        CompositionAnchor(0.25f, 0.3f,  "对角线上段", CompositionStyle.DIAGONAL, 2),
-        CompositionAnchor(0.5f,  0.55f, "对角线中段", CompositionStyle.DIAGONAL, 2),
-        CompositionAnchor(0.75f, 0.8f,  "对角线下段", CompositionStyle.DIAGONAL, 2),
-        // 沿右上→左下对角线
-        CompositionAnchor(0.75f, 0.3f,  "反对角线上段", CompositionStyle.DIAGONAL, 3),
-        CompositionAnchor(0.25f, 0.8f,  "反对角线下段", CompositionStyle.DIAGONAL, 3),
+        // ── 对角线构图 — 两条对角线均匀分布 ──
+        CompositionAnchor(0.2f, 0.2f,  "对角线上段", CompositionStyle.DIAGONAL, 2),
+        CompositionAnchor(0.4f, 0.4f,  "对角线中上段", CompositionStyle.DIAGONAL, 2),
+        CompositionAnchor(0.6f, 0.6f,  "对角线中下段", CompositionStyle.DIAGONAL, 2),
+        CompositionAnchor(0.8f, 0.8f,  "对角线下段", CompositionStyle.DIAGONAL, 2),
+        CompositionAnchor(0.8f, 0.2f,  "反对角线上段", CompositionStyle.DIAGONAL, 2),
+        CompositionAnchor(0.6f, 0.4f,  "反对角线中上段", CompositionStyle.DIAGONAL, 3),
+        CompositionAnchor(0.4f, 0.6f,  "反对角线中下段", CompositionStyle.DIAGONAL, 3),
+        CompositionAnchor(0.2f, 0.8f,  "反对角线下段", CompositionStyle.DIAGONAL, 2),
 
-        // ── 负空间构图 (Negative Space) — 边缘位置，人物小而意境深远 ──
-        CompositionAnchor(0.15f, 0.55f, "左侧负空间", CompositionStyle.NEGATIVE_SPACE, 3),
-        CompositionAnchor(0.85f, 0.55f, "右侧负空间", CompositionStyle.NEGATIVE_SPACE, 3),
-        CompositionAnchor(0.5f,  0.35f, "上方负空间", CompositionStyle.NEGATIVE_SPACE, 4),
+        // ── 负空间构图 — 四角 + 边缘 ──
+        CompositionAnchor(0.12f, 0.2f,  "左上角负空间", CompositionStyle.NEGATIVE_SPACE, 3),
+        CompositionAnchor(0.88f, 0.2f,  "右上角负空间", CompositionStyle.NEGATIVE_SPACE, 3),
+        CompositionAnchor(0.12f, 0.8f,  "左下角负空间", CompositionStyle.NEGATIVE_SPACE, 3),
+        CompositionAnchor(0.88f, 0.8f,  "右下角负空间", CompositionStyle.NEGATIVE_SPACE, 3),
+        CompositionAnchor(0.5f,  0.15f,"顶部负空间", CompositionStyle.NEGATIVE_SPACE, 3),
 
-        // ── 中心构图兜底 ──
-        CompositionAnchor(0.5f, 2f/3, "中央偏下", CompositionStyle.CENTER_FOCUS, 1),
+        // ── 中心构图 ──
+        CompositionAnchor(0.5f, 1f/3, "中央偏上", CompositionStyle.CENTER_FOCUS, 2),
+        CompositionAnchor(0.5f, 0.5f, "画面正中", CompositionStyle.CENTER_FOCUS, 2),
+        CompositionAnchor(0.5f, 2f/3, "中央偏下", CompositionStyle.CENTER_FOCUS, 2),
     )
 
     // 去重阈值 (像素)
@@ -124,8 +130,8 @@ class CandidateGenerator(
     // 公开接口
     // ═══════════════════════════════════════════════════════
 
-    /** 生成候选位置 (最多 maxCount 个) */
-    fun generate(maxCount: Int = 5): List<CandidatePosition> {
+    /** 生成候选位置（全部构图锚点，不做 top-N 筛选） */
+    fun generate(): List<CandidatePosition> {
         val regions = findStandableRegions()
 
         val candidates = mutableListOf<CandidatePosition>()
@@ -133,7 +139,6 @@ class CandidateGenerator(
         val usedPoints = mutableSetOf<Pair<Int, Int>>()  // 去重用
 
         for (anchor in anchors.sortedBy { it.priority }) {
-            if (nextId > maxCount) break
 
             val cx = (anchor.xRatio * w).toInt().coerceIn(0, w - 1)
             val cy = (anchor.yRatio * h).toInt().coerceIn(0, h - 1)
@@ -199,8 +204,8 @@ class CandidateGenerator(
             nextId++
         }
 
-        if (candidates.isEmpty()) return fallbackCandidates(maxCount)
-        return candidates.sortedByDescending { it.standableScore }.take(maxCount)
+        if (candidates.isEmpty()) return fallbackCandidates(Int.MAX_VALUE)
+        return candidates.sortedByDescending { it.standableScore }
     }
 
     // ── 内部: 找到可站立区域 ──
@@ -229,12 +234,13 @@ class CandidateGenerator(
         }
 
         val groundCells = mutableListOf<Triple<Int, Int, Int>>()
-        for (row in gridRows / 2 until gridRows) {
+        for (row in 0 until gridRows) {
             for (col in 0 until gridCols) {
                 if (!occupied[row][col]) {
-                    val rowScore = (row - gridRows / 2).toFloat() / (gridRows / 2).toFloat()
-                    val colScore = 1f - abs(col - gridCols / 2).toFloat() / (gridCols / 2).toFloat()
-                    groundCells.add(Triple(row, col, (rowScore * 0.6 + colScore * 0.4).let { (it * 100).toInt() }))
+                    // 中心优先（离画面中心越近分越高），不偏向下半区
+                    val rowScore = 1f - abs(row - gridRows / 2f).toFloat() / (gridRows / 2f).coerceAtLeast(1f)
+                    val colScore = 1f - abs(col - gridCols / 2f).toFloat() / (gridCols / 2f).coerceAtLeast(1f)
+                    groundCells.add(Triple(row, col, ((rowScore * 0.5 + colScore * 0.5) * 100).toInt()))
                 }
             }
         }

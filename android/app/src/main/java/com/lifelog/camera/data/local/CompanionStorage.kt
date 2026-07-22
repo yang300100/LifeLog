@@ -61,8 +61,12 @@ class CompanionStorage @Inject constructor(
         val file = if (index == 0) getCharacterRefFile()
                    else File(companionDir, "character_ref_$index.png")
         try {
-            FileOutputStream(file).use { out ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            // 原子写入：先写 .tmp，成功后再 rename，防止崩溃导致文件损坏
+            val tmp = File(companionDir, "character_ref_$index.png.tmp")
+            tmp.outputStream().use { out -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, out) }
+            if (!tmp.renameTo(file)) {
+                file.outputStream().use { out -> tmp.inputStream().use { it.copyTo(out) } }
+                tmp.delete()
             }
         } catch (e: Exception) {
             Log.e(TAG, "保存参考图 $index 失败", e)

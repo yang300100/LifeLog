@@ -11,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -99,6 +100,12 @@ fun LogViewerScreen(onBack: () -> Unit) {
                 },
                 actions = {
                     if (logFiles.isNotEmpty()) {
+                        TextButton(onClick = {
+                            val filename = CrashLogger.exportAllLogsToDownload()
+                            Toast.makeText(context,
+                                if (filename != null) "已导出: Download/LifeLog/$filename"
+                                else "导出失败", Toast.LENGTH_LONG).show()
+                        }) { Text("导出", color = MaterialTheme.colorScheme.primary) }
                         TextButton(onClick = { showClearDialog = true }) {
                             Text("清空", color = MaterialTheme.colorScheme.error)
                         }

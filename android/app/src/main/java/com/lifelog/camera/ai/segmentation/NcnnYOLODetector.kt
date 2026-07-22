@@ -83,21 +83,38 @@ class NcnnYOLODetector(
     override suspend fun load() {
         if (isReady) return
         synchronized(this) {
-            if (isReady) return  // 双重检查
+            if (isReady) return
+            CrashLogger.i(TAG, "========== YOLO 模型加载开始 ==========")
             try {
+                CrashLogger.i(TAG, "复制模型文件到缓存...")
                 val paramFile = copyAssetToCache(modelParam)
                 val binFile = copyAssetToCache(modelBin)
+                CrashLogger.i(TAG, "param: ${paramFile.absolutePath} (${paramFile.length()} bytes)")
+                CrashLogger.i(TAG, "bin:   ${binFile.absolutePath} (${binFile.length()} bytes)")
 
-                System.loadLibrary("yolov8_ncnn_jni")  // NCNN 静态链接在此 .so 中
+                CrashLogger.i(TAG, "加载 JNI 库 yolov8_ncnn_jni...")
+                System.loadLibrary("yolov8_ncnn_jni")
+                CrashLogger.i(TAG, "JNI 库加载成功")
 
+                CrashLogger.i(TAG, "调用 nativeLoadModel...")
+                val loadStart = System.currentTimeMillis()
                 val ptr = nativeLoadModel(paramFile.absolutePath, binFile.absolutePath)
-                if (ptr == 0L) throw Exception("NCNN 模型加载失败")
+                val loadMs = System.currentTimeMillis() - loadStart
+                if (ptr == 0L) throw Exception("NCNN 模型加载失败 (nativeLoadModel 返回 0)")
+                CrashLogger.i(TAG, "nativeLoadModel 成功, ptr=0x%x, 耗时 ${loadMs}ms".format(ptr))
 
                 netPtr = ptr
                 isReady = true
-                CrashLogger.i(TAG, "NCNN YOLOv8n 加载成功")
+                CrashLogger.i(TAG, "========== YOLO 模型就绪 ==========")
+                // 输出模型 blob 维度信息（供诊断兼容性）
+                try {
+                    val blobInfo = nativeGetBlobInfo(ptr)
+                    CrashLogger.i(TAG, "模型 Blob: $blobInfo")
+                } catch (e: Exception) {
+                    CrashLogger.w(TAG, "无法获取 blob 信息: ${e.message}")
+                }
             } catch (e: Exception) {
-                CrashLogger.e(TAG, "NCNN 加载失败: ${e.message}")
+                CrashLogger.e(TAG, "YOLO 加载失败: ${e.message}", e)
                 isReady = false
             }
         }
@@ -112,35 +129,62 @@ class NcnnYOLODetector(
     }
 
     override suspend fun segment(sceneBitmap: Bitmap): SegmentResult = withContext(Dispatchers.Default) {
+        val w = sceneBitmap.width; val h = sceneBitmap.height
+        CrashLogger.i(TAG, "========== YOLO 推理开始: ${w}x${h}, conf=${confThreshold}, iou=${iouThreshold} ==========")
+
         if (!isReady) {
-            CrashLogger.w(TAG, "NCNN 未就绪, 回退空结果")
-            return@withContext SegmentResult(emptyList(), sceneBitmap.width, sceneBitmap.height)
+            CrashLogger.w(TAG, "NCNN 未就绪 (isReady=false, netPtr=$netPtr)")
+            return@withContext SegmentResult(emptyList(), w, h)
+        }
+        if (netPtr == 0L) {
+            CrashLogger.w(TAG, "NCNN netPtr=0, 模型已释放或加载失败")
+            return@withContext SegmentResult(emptyList(), w, h)
         }
 
-        val w = sceneBitmap.width
-        val h = sceneBitmap.height
         val startMs = System.currentTimeMillis()
 
-        // 预处理: resize → 640×640 → RGB → float [0,1]
+        // 预处理
+        val preStart = System.currentTimeMillis()
         val inputPixels = preprocess(sceneBitmap)
+        val preMs = System.currentTimeMillis() - preStart
+        CrashLogger.i(TAG, "预处理: ${INPUT_SIZE}x${INPUT_SIZE} RGB→float[0,1], ${preMs}ms, 首像素 R=${"%.3f".format(inputPixels[0])} G=${"%.3f".format(inputPixels[INPUT_SIZE*INPUT_SIZE])} B=${"%.3f".format(inputPixels[2*INPUT_SIZE*INPUT_SIZE])}")
 
         // 推理
+        CrashLogger.i(TAG, "调用 nativeDetect(ptr=0x%x, ${INPUT_SIZE}x${INPUT_SIZE})...".format(netPtr))
         val detectStart = System.currentTimeMillis()
         val detections = nativeDetect(netPtr, inputPixels, INPUT_SIZE, INPUT_SIZE,
-            confThreshold, iouThreshold) ?: emptyArray()
+            confThreshold, iouThreshold)
         val detectMs = System.currentTimeMillis() - detectStart
 
-        // 诊断: 输出原始检测结果
+        // 诊断: 0检测时尝试极低阈值，判断是模型无输出还是阈值问题
         if (detections.isEmpty()) {
-            CrashLogger.w(TAG, "YOLO 推理完成但 0 个检测 (${detectMs}ms) — 请检查 logcat 中 NcnnYOLO_JNI 的 blob 维度日志")
+            CrashLogger.w(TAG, "conf=%.2f 时 0 检测，尝试 conf=0.05 诊断...".format(confThreshold))
+            val diagDetections = nativeDetect(netPtr, inputPixels, INPUT_SIZE, INPUT_SIZE,
+                0.05f, iouThreshold)
+            if (diagDetections.isEmpty()) {
+                CrashLogger.e(TAG, "conf=0.05 仍 0 检测! 模型可能不兼容或输入格式错误 — 请检查 logcat NcnnYOLO_JNI 的 blob 维度日志")
+            } else {
+                CrashLogger.w(TAG, "conf=0.05 → ${diagDetections.size} 个检测! 当前 conf=%.2f 阈值太高".format(confThreshold))
+                diagDetections.take(8).forEach { row ->
+                    val clsId = row[5].toInt()
+                    val name = if (clsId in COCO_NAMES.indices) COCO_NAMES[clsId] else "cls#$clsId"
+                    CrashLogger.w(TAG, "  低分检测: $name conf=%.4f".format(row[4]))
+                }
+            }
         } else {
-            CrashLogger.i(TAG, "YOLO 原始检测: ${detections.size} 个 (${detectMs}ms)")
-            detections.take(5).forEach { row ->
-                CrashLogger.i(TAG, "  [${row[0]},${row[1]},${row[2]},${row[3]}] cls=${row[5].toInt()} conf=%.2f".format(row[4]))
+            CrashLogger.i(TAG, "原始检测: ${detections.size} 个, ${detectMs}ms")
+            detections.forEachIndexed { i, row ->
+                if (row.size >= 6) {
+                    val clsId = row[5].toInt()
+                    val name = if (clsId in COCO_NAMES.indices) COCO_NAMES[clsId] else "cls#$clsId"
+                    CrashLogger.i(TAG, "  #$i: [${"%.2f".format(row[0])},${"%.2f".format(row[1])},${"%.2f".format(row[2])},${"%.2f".format(row[3])}] $name conf=${"%.3f".format(row[4])}")
+                } else {
+                    CrashLogger.w(TAG, "  #$i: 行长度=${row.size} (<6, 异常!)")
+                }
             }
         }
 
-        // 后处理: 解析 float[] → 映射到原图坐标
+        // 后处理: 映射到原图坐标
         val objects = detections.mapIndexed { i, row ->
             val x1 = (row[0] * w).toInt().coerceIn(0, w)
             val y1 = (row[1] * h).toInt().coerceIn(0, h)
@@ -148,34 +192,31 @@ class NcnnYOLODetector(
             val y2 = (row[3] * h).toInt().coerceIn(0, h)
             val conf = row[4]
             val clsId = row[5].toInt()
-            val cx = (x1 + x2) / 2
-            val cy = (y1 + y2) / 2
-            val area = (x2 - x1).toFloat() * (y2 - y1).toFloat()
             val className = if (clsId in COCO_NAMES.indices) COCO_NAMES[clsId] else "unknown"
-            val depth = when {
-                cy > h * 0.7 -> DepthLayer.FOREGROUND
-                cy < h * 0.3 -> DepthLayer.BACKGROUND
-                else -> DepthLayer.MIDGROUND
-            }
-            val interTemplates = INTERACTABLE_MAP[className]?.let { listOf(it) } ?: emptyList()
+            val isInteractable = className in INTERACTABLE_MAP
 
             DetectedObject(
                 id = i,
                 classId = clsId,
                 className = className,
                 bbox = RectI(x1, y1, x2, y2),
-                center = PointI(cx, cy),
-                area = area,
+                center = PointI((x1 + x2) / 2, (y1 + y2) / 2),
+                area = (x2 - x1).toFloat() * (y2 - y1).toFloat(),
                 mask = null,
-                depthLayer = depth,
+                depthLayer = when {
+                    (y1 + y2) / 2 > h * 0.7 -> DepthLayer.FOREGROUND
+                    (y1 + y2) / 2 < h * 0.3 -> DepthLayer.BACKGROUND
+                    else -> DepthLayer.MIDGROUND
+                },
                 confidence = conf,
-                isInteractable = className in INTERACTABLE_MAP,
-                interactionTemplates = interTemplates
+                isInteractable = isInteractable,
+                interactionTemplates = if (isInteractable) INTERACTABLE_MAP[className]?.let { listOf(it) } ?: emptyList() else emptyList()
             )
         }.sortedByDescending { it.area }
 
         val elapsed = System.currentTimeMillis() - startMs
-        CrashLogger.i(TAG, "YOLO 检测: ${objects.size} 个物体, ${elapsed}ms")
+        val interactableCount = objects.count { it.isInteractable }
+        CrashLogger.i(TAG, "========== YOLO 完成: ${objects.size} 物体 (${interactableCount} 可交互), ${elapsed}ms ==========")
         SegmentResult(objects, w, h, elapsed)
     }
 
@@ -230,6 +271,7 @@ class NcnnYOLODetector(
 
     private external fun nativeLoadModel(paramPath: String, binPath: String): Long
     private external fun nativeReleaseModel(netPtr: Long)
+    private external fun nativeGetBlobInfo(netPtr: Long): String
     private external fun nativeDetect(
         netPtr: Long, input: FloatArray, width: Int, height: Int,
         confThresh: Float, iouThresh: Float

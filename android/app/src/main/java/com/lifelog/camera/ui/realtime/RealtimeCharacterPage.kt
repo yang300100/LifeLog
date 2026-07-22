@@ -61,7 +61,7 @@ fun RealtimeCharacterPage(viewModel: RealtimeViewModel = hiltViewModel()) {
 
     fun startSync() {
         val intent = Intent(context, BleSyncService::class.java).apply {
-            action = BleSyncService.ACTION_START_SYNC
+            action = BleSyncService.ACTION_START_PERSISTENT
         }
         try { context.startForegroundService(intent) } catch (_: Exception) {}
     }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.window.Dialog
@@ -20,7 +21,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.lifelog.camera.data.model.CompanionGenerationSummary
@@ -36,6 +36,7 @@ import java.util.*
 fun CompanionGalleryScreen(
     generations: List<CompanionGenerationSummary>,
     onDeleteGeneration: (String) -> Unit,
+    onDownloadGeneration: (String) -> Unit,
     onBack: () -> Unit
 ) {
     var deleteConfirmId by remember { mutableStateOf<String?>(null) }
@@ -92,7 +93,8 @@ fun CompanionGalleryScreen(
                     GalleryItem(
                         summary = gen,
                         onClick = { previewPath = gen.thumbnailPath },
-                        onLongPress = { deleteConfirmId = gen.generationId }
+                        onLongPress = { deleteConfirmId = gen.generationId },
+                        onDownload = { onDownloadGeneration(gen.generationId) }
                     )
                 }
             }
@@ -140,6 +142,35 @@ fun CompanionGalleryScreen(
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Fit
                     )
+
+                    // 底部操作栏
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 32.dp),
+                        horizontalArrangement = Arrangement.spacedBy(24.dp)
+                    ) {
+                        // 下载按钮
+                        FloatingActionButton(
+                            onClick = {
+                                val genId = generations.find { it.thumbnailPath == path }?.generationId
+                                if (genId != null) onDownloadGeneration(genId)
+                            },
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        ) {
+                            Icon(Icons.Default.Download, "保存到相册")
+                        }
+
+                        // 关闭按钮
+                        FloatingActionButton(
+                            onClick = { previewPath = null },
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        ) {
+                            Icon(Icons.Default.Close, "关闭预览")
+                        }
+                    }
                 }
             }
         }
@@ -151,52 +182,75 @@ fun CompanionGalleryScreen(
 private fun GalleryItem(
     summary: CompanionGenerationSummary,
     onClick: () -> Unit,
-    onLongPress: () -> Unit
+    onLongPress: () -> Unit,
+    onDownload: () -> Unit
 ) {
     Card(
         shape = RoundedCornerShape(16.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .combinedClickable(
-                    onClick = onClick,
-                    onLongClick = onLongPress
-                )
-        ) {
-            if (summary.thumbnailPath.isNotBlank() && File(summary.thumbnailPath).exists()) {
-                AsyncImage(
-                    model = File(summary.thumbnailPath),
-                    contentDescription = "陪伴图",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)),
-                    contentScale = ContentScale.FillWidth
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(0.75f)
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.BrokenImage, null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Box {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .combinedClickable(
+                        onClick = onClick,
+                        onLongClick = onLongPress
+                    )
+            ) {
+                if (summary.thumbnailPath.isNotBlank() && File(summary.thumbnailPath).exists()) {
+                    AsyncImage(
+                        model = File(summary.thumbnailPath),
+                        contentDescription = "陪伴图",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)),
+                        contentScale = ContentScale.FillWidth
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(0.75f)
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.BrokenImage, null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+
+                Column(modifier = Modifier.padding(10.dp)) {
+                    val dateFormat = remember { SimpleDateFormat("MM/dd HH:mm", Locale.getDefault()) }
+                    Text(
+                        "片段 #${summary.clipId}",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Text(
+                        dateFormat.format(Date(summary.createdAt)),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 
-            Column(modifier = Modifier.padding(10.dp)) {
-                val dateFormat = remember { SimpleDateFormat("MM/dd HH:mm", Locale.getDefault()) }
-                Text(
-                    "片段 #${summary.clipId}",
-                    style = MaterialTheme.typography.labelMedium
-                )
-                Text(
-                    dateFormat.format(Date(summary.createdAt)),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            // 下载按钮 — 右上角半透明圆形
+            IconButton(
+                onClick = onDownload,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .size(32.dp)
+                    .background(
+                        Color.Black.copy(alpha = 0.45f),
+                        CircleShape
+                    )
+            ) {
+                Icon(
+                    Icons.Default.Download,
+                    "保存到相册",
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
                 )
             }
         }

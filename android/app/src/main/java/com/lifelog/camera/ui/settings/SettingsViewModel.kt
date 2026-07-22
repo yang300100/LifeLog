@@ -1,6 +1,7 @@
 package com.lifelog.camera.ui.settings
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.lifecycle.ViewModel
@@ -9,6 +10,7 @@ import com.lifelog.camera.ai.AIClient
 import com.lifelog.camera.ai.ApiPreferences
 import com.lifelog.camera.ble.BleFileTransfer
 import com.lifelog.camera.data.local.CompanionStorage
+import com.lifelog.camera.util.CrashLogger
 import com.lifelog.camera.data.model.ReferenceCategory
 import com.lifelog.camera.data.repository.VideoRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -44,12 +46,16 @@ class SettingsViewModel @Inject constructor(
 
     init {
         // 加载存储数据
-        val config = apiPreferences.get()
-        apiBaseUrl.value = config.baseUrl
-        apiKey.value = config.apiKey
-        apiModel.value = config.model
-        apiTemperature.value = config.temperature.toString()
-        isRealtimeMode.value = apiPreferences.getMode() == "realtime"
+        try {
+            val config = apiPreferences.get()
+            apiBaseUrl.value = config.baseUrl
+            apiKey.value = config.apiKey
+            apiModel.value = config.model
+            apiTemperature.value = config.temperature.toString()
+            isRealtimeMode.value = apiPreferences.getMode() == "realtime"
+        } catch (e: Exception) {
+            CrashLogger.e("SettingsVM", "配置读取失败", e)
+        }
 
         viewModelScope.launch {
             repository.getAllClipsFlow().collect { clips ->
@@ -86,11 +92,24 @@ class SettingsViewModel @Inject constructor(
 
     val kimiApiKey = MutableStateFlow("")
     val seedreamApiKey = MutableStateFlow("")
+    val seedreamBaseUrl = MutableStateFlow("")
+    val seedreamModel = MutableStateFlow("")
 
     init {
-        val kimiCfg = apiPreferences.getKimiConfig()
-        kimiApiKey.value = kimiCfg.apiKey
-        seedreamApiKey.value = apiPreferences.getSeedreamApiKey()
+        try {
+            val kimiCfg = apiPreferences.getKimiConfig()
+            kimiApiKey.value = kimiCfg.apiKey
+        } catch (e: Exception) {
+            CrashLogger.e("SettingsVM", "Kimi 配置读取失败", e)
+        }
+        try {
+            seedreamApiKey.value = apiPreferences.getSeedreamApiKey()
+            val sdCfg = apiPreferences.getSeedreamConfig()
+            seedreamBaseUrl.value = sdCfg.baseUrl
+            seedreamModel.value = sdCfg.model
+        } catch (e: Exception) {
+            CrashLogger.e("SettingsVM", "Seedream 配置读取失败", e)
+        }
     }
 
     fun saveKimiKey(key: String) {
@@ -99,15 +118,13 @@ class SettingsViewModel @Inject constructor(
         kimiApiKey.value = key
     }
 
-    fun saveSeedreamKey(key: String) {
+    fun saveSeedreamConfig(key: String, baseUrl: String, model: String) {
         apiPreferences.saveSeedreamConfig(
-            AIClient.ApiConfig(
-                baseUrl = "https://ark.cn-beijing.volces.com/api/v3",
-                apiKey = key,
-                model = "doubao-seedream-5-0-260128"
-            )
+            AIClient.ApiConfig(baseUrl = baseUrl, apiKey = key, model = model)
         )
         seedreamApiKey.value = key
+        seedreamBaseUrl.value = baseUrl
+        seedreamModel.value = model
     }
 
     // ── 角色文字描述 ──
@@ -129,7 +146,16 @@ class SettingsViewModel @Inject constructor(
 
     val hasCharacterRef = MutableStateFlow(companionStorage.hasAnyCharacterReference())
     val characterRefBitmaps = MutableStateFlow(companionStorage.getCharacterRefFiles().mapNotNull {
-        try { BitmapFactory.decodeFile(it.absolutePath) } catch (e: Exception) { null }
+        try {
+            val bmp = BitmapFactory.decodeFile(it.absolutePath) ?: return@mapNotNull null
+            // 缩放到 256px 宽（缩略图展示用，防止超大原图导致 Canvas 崩溃）
+            if (bmp.width > 256) {
+                val ratio = 256f / bmp.width
+                val scaled = Bitmap.createScaledBitmap(bmp, 256, (bmp.height * ratio).toInt(), true)
+                bmp.recycle()
+                scaled
+            } else bmp
+        } catch (e: Exception) { null }
     })
     val characterRefFileNames = MutableStateFlow(companionStorage.getCharacterRefFiles().map { it.name })
     // 文件名 → 分类
@@ -142,7 +168,15 @@ class SettingsViewModel @Inject constructor(
     private fun refreshRefState() {
         val files = companionStorage.getCharacterRefFiles()
         characterRefBitmaps.value = files.mapNotNull {
-            try { BitmapFactory.decodeFile(it.absolutePath) } catch (e: Exception) { null }
+            try {
+                val bmp = BitmapFactory.decodeFile(it.absolutePath) ?: return@mapNotNull null
+                if (bmp.width > 256) {
+                    val ratio = 256f / bmp.width
+                    val scaled = Bitmap.createScaledBitmap(bmp, 256, (bmp.height * ratio).toInt(), true)
+                    bmp.recycle()
+                    scaled
+                } else bmp
+            } catch (e: Exception) { null }
         }
         characterRefFileNames.value = files.map { it.name }
         refCategories.value = companionStorage.loadRefMetas()

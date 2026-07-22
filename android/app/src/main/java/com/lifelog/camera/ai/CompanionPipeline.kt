@@ -78,6 +78,7 @@ class CompanionPipeline @Inject constructor(
     private var cachedScenePath: String = ""
     private var cachedRefPaths: List<String> = emptyList()
     private var cachedRefHint: String = ""
+    private var cachedRefTypes: List<Pair<String, SeedreamGenerator.RefType>> = emptyList()
 
     // ═══════════════════════════════════════════════════════
     // Step 1: 生成候选 + 标注图 (本地, 快速)
@@ -90,16 +91,18 @@ class CompanionPipeline @Inject constructor(
 
     fun step1_generateCandidates(
         sceneBitmap: Bitmap,
-        scenePath: String,
+        @Suppress("UNUSED_PARAMETER") scenePath: String,
         clipId: Long,
         referencePaths: List<String>,
-        referenceHint: String = ""
+        referenceHint: String = "",
+        referenceTypes: List<Pair<String, SeedreamGenerator.RefType>> = emptyList()
     ) {
         if (job?.isActive == true) { CrashLogger.w(TAG, "管线已在运行中"); return }
 
         cachedSceneBitmap = sceneBitmap
         cachedRefPaths = referencePaths
         cachedRefHint = referenceHint
+        cachedRefTypes = referenceTypes
         generationId = "gen_${System.currentTimeMillis()}_$clipId"
         genDir = storage.getGenerationDir(generationId)
 
@@ -115,20 +118,32 @@ class CompanionPipeline @Inject constructor(
             try {
                 // 分割
                 updateState(PipelineState.Segmenting)
-                if (!segmenter.isReady) segmenter.load()
+                CrashLogger.i(TAG, "Step1-分割: segmenter=${segmenter.javaClass.simpleName}, isReady=${segmenter.isReady}")
+                if (!segmenter.isReady) {
+                    CrashLogger.i(TAG, "Step1-分割: 模型未加载，开始加载...")
+                    segmenter.load()
+                    CrashLogger.i(TAG, "Step1-分割: 加载完成, isReady=${segmenter.isReady}")
+                }
                 var segResult: SegmentResult? = null
                 try { segResult = segmenter.segment(sceneBitmap) }
-                catch (e: Exception) { CrashLogger.w(TAG, "分割异常: ${e.message}") }
+                catch (e: Exception) { CrashLogger.e(TAG, "分割异常: ${e.message}", e) }
 
                 cachedObjects = segResult?.objects ?: emptyList()
                 val imgW = sceneBitmap.width; val imgH = sceneBitmap.height
+                CrashLogger.i(TAG, "Step1-分割结果: ${cachedObjects.size} 个物体, 耗时=${segResult?.inferenceMs ?: 0}ms")
+                if (cachedObjects.isNotEmpty()) {
+                    cachedObjects.groupBy { it.className }.forEach { (name, objs) ->
+                        CrashLogger.i(TAG, "  $name: ${objs.size} 个, 可交互=${objs.any { it.isInteractable }}")
+                    }
+                }
 
                 // 候选生成
                 updateState(PipelineState.GeneratingCandidates(0))
                 val gen = CandidateGenerator(cachedObjects, imgW, imgH)
-                val candidates = gen.generate(5)
+                val candidates = gen.generate()  // 全部构图锚点
                 _candidates.value = candidates
                 updateState(PipelineState.GeneratingCandidates(candidates.size))
+                CrashLogger.i(TAG, "Step1-候选: ${candidates.size} 个位置 (${candidates.count { it.standableScore >= 0.7f }} 个高可行)")
 
                 // 标注图
                 updateState(PipelineState.BuildingAnnotated)
@@ -188,7 +203,7 @@ class CompanionPipeline @Inject constructor(
 
                 // 解析位置+交互 → 构建 Seedream Prompt
                 val params = resolvePromptParams(candidates, effectiveSelection)
-                val sdPrompt = SeedreamGenerator.buildSeedreamPrompt(params.posDesc, params.interactionDesc)
+                val sdPrompt = SeedreamGenerator.buildSeedreamPrompt(params.interactionDesc)
                 _seedreamPrompt.value = sdPrompt
 
                 CrashLogger.i(TAG, "Step2 完成: best=#${effectiveSelection.bestCandidateId} conf=${effectiveSelection.confidence}")
@@ -228,13 +243,19 @@ class CompanionPipeline @Inject constructor(
                 )
                 val params = resolvePromptParams(candidates, effectiveSelection)
 
+                // 在场景图上绘制黄色位置标记，Seedream 可通过视觉标记精准定位
+                val markedScenePath = if (params.finalCandidate != null) {
+                    drawPositionMarker(cachedScenePath, genDir!!, params.finalCandidate)
+                } else cachedScenePath
+
                 val resultUrl = seedreamGenerator.generate(
-                    scenePath = cachedScenePath,
-                    referencePaths = cachedRefPaths,
+                    scenePath = markedScenePath,
+                    references = cachedRefTypes.ifEmpty {
+                        cachedRefPaths.map { Pair(it, SeedreamGenerator.RefType.CHARACTER) }
+                    },
                     positionDesc = params.posDesc,
                     interactionDesc = params.interactionDesc,
-                    referenceHint = cachedRefHint,
-                    customPrompt = customSeedreamPrompt ?: _seedreamPrompt.value,
+                    customPrompt = customSeedreamPrompt,  // null → generate() 自动构建含参考图的完整 prompt
                     size = outputSize
                 ).getOrElse { e ->
                     CrashLogger.e(TAG, "Seedream 生成失败: ${e.message}", e)
@@ -297,10 +318,11 @@ class CompanionPipeline @Inject constructor(
         sceneBitmap: Bitmap, scenePath: String, clipId: Long,
         referencePaths: List<String>,
         customKimiPrompt: String? = null, customSeedreamPrompt: String? = null,
-        frameIndex: Int = 0, outputSize: String = "2k",
-        referenceHint: String = ""
+        @Suppress("UNUSED_PARAMETER") frameIndex: Int = 0, outputSize: String = "2k",
+        referenceHint: String = "",
+        referenceTypes: List<Pair<String, SeedreamGenerator.RefType>> = emptyList()
     ) {
-        step1_generateCandidates(sceneBitmap, scenePath, clipId, referencePaths, referenceHint)
+        step1_generateCandidates(sceneBitmap, scenePath, clipId, referencePaths, referenceHint, referenceTypes)
         // 在 step1 的 job 完成后自动续接 step2+step3
         scope.launch {
             job?.join()
@@ -416,6 +438,48 @@ class CompanionPipeline @Inject constructor(
                 ?: "自然站立，面朝前方，带着温柔的微笑",
             finalCandidate = finalCandidate
         )
+    }
+
+    /** 在场景图上绘制黄色位置标记，返回标记后的图片路径 */
+    private fun drawPositionMarker(
+        scenePath: String,
+        dir: File,
+        candidate: CandidatePosition
+    ): String {
+        val sceneBmp = BitmapFactory.decodeFile(scenePath)
+            ?: return scenePath  // 解码失败，回退到原图
+
+        try {
+            val markerBmp = sceneBmp.copy(Bitmap.Config.ARGB_8888, true)
+            val canvas = android.graphics.Canvas(markerBmp)
+            val paint = android.graphics.Paint().apply {
+                isAntiAlias = true; style = android.graphics.Paint.Style.FILL
+            }
+
+            val cx = candidate.centerX.toFloat()
+            val cy = candidate.centerY.toFloat()
+            val r = (minOf(sceneBmp.width, sceneBmp.height) * 0.025f).coerceIn(12f, 40f)
+
+            // 外圈发光（半透明黄）
+            paint.color = android.graphics.Color.argb(80, 255, 220, 0)
+            canvas.drawCircle(cx, cy, r * 2.5f, paint)
+            // 实心黄点
+            paint.color = android.graphics.Color.argb(220, 255, 210, 0)
+            canvas.drawCircle(cx, cy, r, paint)
+            // 中心高亮
+            paint.color = android.graphics.Color.argb(255, 255, 255, 200)
+            canvas.drawCircle(cx, cy, r * 0.3f, paint)
+
+            val markedFile = File(dir, "scene_marked.jpg")
+            FileOutputStream(markedFile).use { out ->
+                markerBmp.compress(Bitmap.CompressFormat.JPEG, 95, out)
+            }
+            markerBmp.recycle()
+            CrashLogger.i(TAG, "位置标记已绘制: (${candidate.centerX}, ${candidate.centerY}) → ${markedFile.name}")
+            return markedFile.absolutePath
+        } finally {
+            sceneBmp.recycle()
+        }
     }
 
     private fun updateState(state: PipelineState) {

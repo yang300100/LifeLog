@@ -71,10 +71,10 @@ private fun playClipFile(context: android.content.Context, localPath: String) {
     } catch (_: Exception) {}
 }
 
-/** 手动触发同步：不管当前模式，直接用一次性的日志模式启动（oneShot=true） */
+/** 手动触发同步：重启持久扫描循环（如果已在运行则中断当前等待立即开始） */
 private fun startCameraSync(context: android.content.Context) {
     val intent = Intent(context, BleSyncService::class.java).apply {
-        action = BleSyncService.ACTION_START_SYNC
+        action = BleSyncService.ACTION_START_PERSISTENT
     }
     try { context.startForegroundService(intent) } catch (_: Exception) {}
 }
@@ -82,7 +82,7 @@ private fun startCameraSync(context: android.content.Context) {
 @Composable
 fun TimelineScreen(
     viewModel: TimelineViewModel = hiltViewModel(),
-    onNavigateToLog: () -> Unit = {}
+    @Suppress("UNUSED_PARAMETER") onNavigateToLog: () -> Unit = {}
 ) {
     val items by viewModel.todayItems.collectAsState()
     val syncState by viewModel.syncState.collectAsState()
@@ -353,25 +353,30 @@ fun TimelineScreen(
 
         // ── 管线进度/状态监听 ──
         val pipelineState by companionVM.pipelineState.collectAsState()
+        // 跟踪已处理的状态，防止关闭 Sheet 后自动弹出
+        var lastHandledState by remember { mutableStateOf<PipelineState?>(null) }
         LaunchedEffect(pipelineState) {
+            if (pipelineState == lastHandledState) return@LaunchedEffect
             when (pipelineState) {
                 is PipelineState.CandidatesReady -> {
-                    // Step1 完成 → 展示候选
+                    lastHandledState = pipelineState
                     showCompanionProgress = false
                     showPromptSheet = true
                 }
                 is PipelineState.KimiDone -> {
-                    // Step2 完成 → 展示 Kimi 结果 + Seedream Prompt
+                    lastHandledState = pipelineState
                     showCompanionProgress = false
                     showPromptSheet = true
                 }
                 is PipelineState.Done -> {
+                    lastHandledState = pipelineState
                     showCompanionProgress = false
                     showPromptSheet = false
                     companionVM.refreshGallery()
                 }
                 is PipelineState.Error -> {
-                    showCompanionProgress = true  // 进度弹窗会显示错误
+                    lastHandledState = pipelineState
+                    showCompanionProgress = true
                 }
                 else -> {}
             }
@@ -431,9 +436,17 @@ fun TimelineScreen(
         // ── 同伴: 画廊页面 ──
         if (showGallery) {
             val generations by companionVM.generations.collectAsState()
+            val context = LocalContext.current
+            // Toast 反馈
+            LaunchedEffect(Unit) {
+                companionVM.toastMessage.collect { msg ->
+                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
             CompanionGalleryScreen(
                 generations = generations,
                 onDeleteGeneration = companionVM::deleteGeneration,
+                onDownloadGeneration = companionVM::downloadGeneration,
                 onBack = {
                     showGallery = false
                     companionVM.refreshGallery()

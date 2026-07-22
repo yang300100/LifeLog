@@ -10,12 +10,15 @@ import com.lifelog.camera.data.local.CompanionStorage
 import dagger.hilt.android.qualifiers.ApplicationContext
 import com.lifelog.camera.data.model.*
 import com.lifelog.camera.util.CrashLogger
+import com.lifelog.camera.util.MediaStoreSaver
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.*
 import javax.inject.Inject
 
 /**
@@ -123,9 +126,8 @@ class CompanionViewModel @Inject constructor(
     // ── Step 1: 生成候选 + 标注图 ──
     fun step1_generateCandidates() {
         val bmp = currentSceneBitmap ?: return
-        val refPaths = getRefPaths()
-        CompanionService.start(appContext)  // 启动前台服务保活
-        pipeline.step1_generateCandidates(bmp, currentClipPath, currentClipId, refPaths, buildRefHint())
+        CompanionService.start(appContext)
+        pipeline.step1_generateCandidates(bmp, currentClipPath, currentClipId, getRefPaths(), buildRefHint(), buildRefTypes())
     }
 
     // ── Step 2: Kimi 筛选 ──
@@ -142,7 +144,7 @@ class CompanionViewModel @Inject constructor(
     fun runFullPipeline() {
         val bmp = currentSceneBitmap ?: return
         CompanionService.start(appContext)
-        pipeline.runPipeline(bmp, currentClipPath, currentClipId, getRefPaths(), referenceHint = buildRefHint())
+        pipeline.runPipeline(bmp, currentClipPath, currentClipId, getRefPaths(), referenceHint = buildRefHint(), referenceTypes = buildRefTypes())
     }
 
     fun cancel() { pipeline.cancel() }
@@ -160,19 +162,20 @@ class CompanionViewModel @Inject constructor(
     fun buildDefaultSeedreamPrompt(): String {
         val cands = pipeline.getCandidates()
         val best = cands.maxByOrNull { it.standableScore }
-        val pos = best?.regionDescription ?: "画面中央偏下"
         val act = best?.interactionSuggestions?.firstOrNull()?.action ?: "自然站立"
-        return SeedreamGenerator.buildSeedreamPrompt(pos, act)
+        return SeedreamGenerator.buildSeedreamPrompt(act)
     }
 
     // ── Seedream Key ──
     fun checkSeedreamKey() { _seedreamKeyConfigured.value = apiPreferences.getSeedreamApiKey().isNotBlank() }
     fun saveSeedreamApiKey(key: String) {
-        apiPreferences.saveSeedreamConfig(AIClient.ApiConfig(
-            baseUrl = "https://ark.cn-beijing.volces.com/api/v3",
-            apiKey = key, model = "doubao-seedream-5-0-260128"
-        ))
-        _seedreamKeyConfigured.value = key.isNotBlank()
+        try {
+            val current = apiPreferences.getSeedreamConfig()
+            apiPreferences.saveSeedreamConfig(current.copy(apiKey = key))
+            _seedreamKeyConfigured.value = key.isNotBlank()
+        } catch (e: Exception) {
+            CrashLogger.e("CompanionVM", "Seedream Key 保存失败", e)
+        }
     }
 
     // ── 画廊 ──
@@ -181,6 +184,32 @@ class CompanionViewModel @Inject constructor(
     }
     fun deleteGeneration(generationId: String) {
         viewModelScope.launch { withContext(Dispatchers.IO) { storage.deleteGeneration(generationId) }; refreshGallery() }
+    }
+
+    // ── 下载到系统相册 ──
+    private val _toastMessage = MutableSharedFlow<String>()
+    val toastMessage: SharedFlow<String> = _toastMessage.asSharedFlow()
+
+    fun downloadGeneration(generationId: String) {
+        viewModelScope.launch {
+            val gen = _generations.value.find { it.generationId == generationId }
+            if (gen == null) {
+                _toastMessage.emit("图片不存在")
+                return@launch
+            }
+            val success = withContext(Dispatchers.IO) {
+                val sourceFile = File(gen.thumbnailPath)
+                val dateStr = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
+                    .format(Date(gen.createdAt))
+                val name = "LifeLog_陪伴_${dateStr}_${gen.clipId}"
+                MediaStoreSaver.saveImageToGallery(appContext, sourceFile, name)
+            }
+            if (success) {
+                _toastMessage.emit("已保存到相册 Pictures/LifeLog")
+            } else {
+                _toastMessage.emit("保存失败，请检查存储空间")
+            }
+        }
     }
 
     private fun getRefPaths(): List<String> {
@@ -192,6 +221,25 @@ class CompanionViewModel @Inject constructor(
      *   清楚指明不同图像需要参考的对象
      *   例如: "参考图中角色的形象特征，参考画风图的渲染风格。"
      */
+    /** 从 metadata 构建结构化参考图类型列表 */
+    private fun buildRefTypes(): List<Pair<String, SeedreamGenerator.RefType>> {
+        val files = storage.getCharacterRefFiles()
+        if (files.isEmpty()) return emptyList()
+        val metas = storage.loadRefMetas()
+
+        return files.map { f ->
+            val cat = metas[f.name] ?: ReferenceCategory.CHARACTER
+            val type = when (cat) {
+                ReferenceCategory.CHARACTER    -> SeedreamGenerator.RefType.CHARACTER
+                ReferenceCategory.MULTI_ANGLE -> SeedreamGenerator.RefType.CHARACTER_ALT
+                ReferenceCategory.ART_STYLE   -> SeedreamGenerator.RefType.STYLE
+                ReferenceCategory.POSE        -> SeedreamGenerator.RefType.POSE
+                ReferenceCategory.OTHER       -> SeedreamGenerator.RefType.GENERAL
+            }
+            Pair(f.absolutePath, type)
+        }
+    }
+
     private fun buildRefHint(): String {
         val files = storage.getCharacterRefFiles()
         if (files.isEmpty()) return ""

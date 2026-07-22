@@ -20,8 +20,6 @@ import com.lifelog.camera.media.MjpegTranscoder
 import com.lifelog.camera.util.CrashLogger
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import java.io.File
 import javax.inject.Inject
 
@@ -36,16 +34,14 @@ class BleSyncService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var syncJob: Job? = null
-    private var isPersistent = false
 
     companion object {
         const val CHANNEL_ID = "ble_sync"
         const val NOTIFICATION_ID = 1001
-        const val ACTION_START_SYNC = "com.lifelog.camera.START_SYNC"
         const val ACTION_START_PERSISTENT = "com.lifelog.camera.START_PERSISTENT"
         private const val TAG = "BleSyncSvc"
-        private const val PERSISTENT_INTERVAL_MS = 300_000L  // 实时模式 5 分钟扫一次（跟固件拍摄周期对齐）
-        private const val PERSISTENT_SCAN_TIMEOUT = 15_000L  // 每次扫 15 秒
+        private const val PERSISTENT_INTERVAL_MS = 60_000L  // 后台 60 秒扫一次（固件 BLE 窗口仅 30s，频繁扫才能命中）
+        private const val NOTIFY_LABEL = "LifeLog 同步"
     }
 
     override fun onCreate() {
@@ -55,44 +51,28 @@ class BleSyncService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        CrashLogger.i(TAG, "onStartCommand action=${intent?.action}, flags=$flags")
+        CrashLogger.i(TAG, "onStartCommand action=${intent?.action}")
         if (intent == null) {
-            CrashLogger.w(TAG, "Service 被系统重启，intent 为 null，等待主动启动")
-            return START_STICKY
-        }
-        when (intent.action) {
-            ACTION_START_SYNC -> startSync(oneShot = true)
-            ACTION_START_PERSISTENT -> startSync(oneShot = false)
+            // 系统重启 Service（START_STICKY），自动恢复后台同步
+            CrashLogger.i(TAG, "系统重启 Service，自动恢复同步")
+            startSync()
+        } else if (intent.action == ACTION_START_PERSISTENT) {
+            startSync()
         }
         return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private var notificationText = MutableStateFlow("准备扫描...")
-    private val _notificationText: StateFlow<String> get() = notificationText
-
-    private fun startSync(oneShot: Boolean) {
-        if (syncJob?.isActive == true) {
-            if (oneShot) {
-                // 手动点了同步按钮 → 中断等待/当前操作，立刻开始一轮新同步
-                CrashLogger.i(TAG, "手动触发同步，重启同步循环")
-                syncJob?.cancel()
-            } else {
-                // 自动定时器触发但已有同步在跑 → 跳过这一轮
-                CrashLogger.w(TAG, "同步已在运行中，跳过本轮自动扫描")
-                return
-            }
-        }
-
-        isPersistent = !oneShot
-        val modeLabel = if (isPersistent) "实时模式" else "日志模式"
-        CrashLogger.i(TAG, "启动同步: $modeLabel")
+    private fun startSync() {
+        // 如果已有同步在跑，中断当前等待立刻开始新一轮
+        syncJob?.cancel()
+        CrashLogger.i(TAG, "启动后台同步")
 
         syncJob = scope.launch {
             // 启动前台服务
             try {
-                val notification = buildNotification("$modeLabel - 准备扫描...")
+                val notification = buildNotification("$NOTIFY_LABEL - 准备扫描...")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                     startForeground(NOTIFICATION_ID, notification,
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
@@ -110,12 +90,12 @@ class BleSyncService : Service() {
                 try {
                     bleTransfer.state.collect { state ->
                         val text = when (state) {
-                            is BleFileTransfer.SyncState.Idle -> "$modeLabel - 等待扫描"
-                            is BleFileTransfer.SyncState.Scanning -> "$modeLabel - 扫描中..."
-                            is BleFileTransfer.SyncState.Connecting -> "$modeLabel - 连接中..."
-                            is BleFileTransfer.SyncState.Syncing -> "$modeLabel - 同步 ${state.current}/${state.total}"
-                            is BleFileTransfer.SyncState.Done -> "$modeLabel - 完成 ${state.files} 文件"
-                            is BleFileTransfer.SyncState.Error -> "$modeLabel - ${state.msg}"
+                            is BleFileTransfer.SyncState.Idle -> "$NOTIFY_LABEL - 等待扫描"
+                            is BleFileTransfer.SyncState.Scanning -> "$NOTIFY_LABEL - 扫描中..."
+                            is BleFileTransfer.SyncState.Connecting -> "$NOTIFY_LABEL - 连接中..."
+                            is BleFileTransfer.SyncState.Syncing -> "$NOTIFY_LABEL - 同步 ${state.current}/${state.total}"
+                            is BleFileTransfer.SyncState.Done -> "$NOTIFY_LABEL - 完成 ${state.files} 文件"
+                            is BleFileTransfer.SyncState.Error -> "$NOTIFY_LABEL - ${state.msg}"
                         }
                         try {
                             getSystemService(NotificationManager::class.java)
@@ -126,9 +106,10 @@ class BleSyncService : Service() {
                 catch (e: Exception) { CrashLogger.e(TAG, "collect 异常", e) }
             }
 
-            // 同步循环
+            // 同步循环（syncJob 被替换时旧循环自动退出，防止双循环）
             val videoDir = repository.getVideoDir()
-            while (isPersistent || syncJob == coroutineContext[Job]) {
+            val myJob = coroutineContext[Job]
+            while (myJob?.isActive == true) {
                 CrashLogger.i(TAG, "开始扫描...")
 
                 val result = try {
@@ -139,7 +120,6 @@ class BleSyncService : Service() {
                     Result.failure(e)
                 }
 
-                // 同步完成后刷新设备信息缓存（设置页面展示用）
                 if (result.isSuccess) {
                     try { bleTransfer.refreshCachedDeviceInfo() } catch (_: Exception) {}
                 }
@@ -156,13 +136,16 @@ class BleSyncService : Service() {
                         } catch (e: Exception) {
                             CrashLogger.e(TAG, "注册文件失败", e)
                         }
-                        // 用本次同步拿到的精确时间戳回填已在库中的旧记录
                         try {
                             repository.fixTimestamps(bleTransfer.lastCapturedAt)
                         } catch (e: Exception) {
                             CrashLogger.e(TAG, "时间戳回填失败", e)
                         }
-                        // 实时模式：同步完成后立刻自动 RPG 分析
+                        try {
+                            transcodeMissingMp4(videoDir)
+                        } catch (e: Exception) {
+                            CrashLogger.e(TAG, "批量转码异常", e)
+                        }
                         val isRealtime = apiPreferences.getMode() == "realtime"
                         if (isRealtime && apiPreferences.get().isValid) {
                             CrashLogger.i(TAG, "自动触发 RPG 分析...")
@@ -182,28 +165,13 @@ class BleSyncService : Service() {
                             }
                         }
                     }
-                    // 同步成功后：给所有缺 MP4 的 .mjpg 补转码（含历史遗留文件）
-                    // .mjpg 是私有格式没法播，MP4 才是播放用的正式产物
-                    try {
-                        transcodeMissingMp4(videoDir)
-                    } catch (e: Exception) {
-                        CrashLogger.e(TAG, "批量转码异常", e)
-                    }
                 }
 
                 result.onFailure { e ->
                     CrashLogger.w(TAG, "同步失败: ${e.message}")
                 }
 
-                if (!isPersistent) break
-                // 等待 2 分钟后再次扫描
                 delay(PERSISTENT_INTERVAL_MS)
-            }
-
-            // 实时模式结束才关前台
-            if (!isPersistent) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
             }
         }
     }

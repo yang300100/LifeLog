@@ -63,34 +63,54 @@ class AnnotatedImageBuilder(
             }
         }
 
-        // 3. 所有 YOLO 检测物体 — 边框 + 类名 + 置信度
-        val detectLabel = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            textSize = maxOf(24f, minOf(w, h).toFloat() / 40f)
-        }
+        // 3. 所有 YOLO 检测物体 — 边框底色 + 类名 + 置信度标签
+        val labelTextSize = maxOf(28f, minOf(w, h).toFloat() / 35f)
+        val detectLabel = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = labelTextSize }
+        val labelBg = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+
         for (obj in objects) {
             val isInteract = obj.isInteractable
             val isObstacle = obj.classId in CandidateGenerator.OBSTACLE_IDS || obj.className == "person"
 
-            // 边框颜色: 可交互=蓝, 障碍=红, 其他=灰
+            // 边框颜色: 可交互=蓝, 障碍=红, 其他=亮绿
             val boxColor = when {
-                isInteract -> Color.argb(220, 50, 140, 255)
-                isObstacle -> Color.argb(180, 220, 50, 50)
-                else -> Color.argb(160, 160, 160, 160)
+                isInteract -> Color.argb(230, 60, 150, 255)
+                isObstacle -> Color.argb(200, 240, 60, 60)
+                else -> Color.argb(200, 80, 220, 80)
             }
             val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = boxColor
                 style = Paint.Style.STROKE
-                strokeWidth = 2.5f
+                strokeWidth = 3f
             }
-            canvas.drawRect(obj.bbox.x1.toFloat(), obj.bbox.y1.toFloat(),
-                obj.bbox.x2.toFloat(), obj.bbox.y2.toFloat(), boxPaint)
+            val left = obj.bbox.x1.toFloat(); val top = obj.bbox.y1.toFloat()
+            val right = obj.bbox.x2.toFloat(); val bottom = obj.bbox.y2.toFloat()
+            canvas.drawRect(left, top, right, bottom, boxPaint)
 
-            // 标签: 类名 + 置信度
-            detectLabel.color = boxColor
+            // 标签底色 + 文字
             val label = "${obj.className} ${(obj.confidence * 100).toInt()}%"
-            canvas.drawText(label, obj.bbox.x1.toFloat(),
-                maxOf(detectLabel.textSize + 4, (obj.bbox.y1 - 6).toFloat()), detectLabel)
+            val tw = detectLabel.measureText(label)
+            val th = detectLabel.descent() - detectLabel.ascent()
+            val labelY = maxOf(th + 4, top - 6f)
+            labelBg.color = Color.argb(200, 0, 0, 0)
+            canvas.drawRect(left, labelY - th - 2, left + tw + 8, labelY + 2, labelBg)
+            detectLabel.color = boxColor
+            canvas.drawText(label, left + 4, labelY, detectLabel)
         }
+
+        // 3.5 检测统计覆盖层（左上角）
+        val infoPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(220, 255, 255, 255)
+            textSize = maxOf(32f, minOf(w, h).toFloat() / 28f)
+        }
+        val infoBg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(180, 0, 0, 0)
+            style = Paint.Style.FILL
+        }
+        val infoText = "YOLO: ${objects.size} 检测 | ${candidates.size} 候选"
+        val iw = infoPaint.measureText(infoText); val ih = infoPaint.descent() - infoPaint.ascent()
+        canvas.drawRect(8f, 8f, 8f + iw + 16, 8f + ih + 16, infoBg)
+        canvas.drawText(infoText, 16f, 16f + ih, infoPaint)
 
         // 4. 候选位置 (黄色圆点 + 编号)
         val markerRadius = maxOf(12f, minOf(w, h).toFloat() / 60f)

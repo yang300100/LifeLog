@@ -125,35 +125,56 @@ fun SettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(14.dp))
-            Divider(color = MaterialTheme.colorScheme.outlineVariant)
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Seedream API Key (图像生成)
+            // ── Seedream 图像生成配置 ──
+
             var seedreamKey by remember { mutableStateOf(viewModel.seedreamApiKey.value) }
+            var seedreamUrl by remember { mutableStateOf(viewModel.seedreamBaseUrl.value) }
+            var seedreamModel by remember { mutableStateOf(viewModel.seedreamModel.value) }
+
+            Text("🖼️ Seedream 图像生成",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.height(8.dp))
+
             PeachTextField(
-                value = seedreamKey,
-                onValueChange = { seedreamKey = it },
-                label = "Seedream API Key (图像生成)",
-                placeholder = "ark-...",
-                modifier = Modifier.fillMaxWidth(),
-                trailingIcon = {
-                    IconButton(onClick = { seedreamKey = "" }) { Icon(Icons.Default.Close, "", modifier = Modifier.size(18.dp)) }
-                }
+                value = seedreamUrl,
+                onValueChange = { seedreamUrl = it },
+                label = "Base URL",
+                placeholder = "https://ark.cn-beijing.volces.com/api/v3",
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
             )
-            Spacer(Modifier.height(2.dp))
-            Text("火山引擎方舟",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.weight(1f)) {
+                    PeachTextField(
+                        value = seedreamModel,
+                        onValueChange = { seedreamModel = it },
+                        label = "Model",
+                        placeholder = "doubao-seedream-5-0-260128"
+                    )
+                }
+                Box(Modifier.weight(1f)) {
+                    PeachTextField(
+                        value = seedreamKey,
+                        onValueChange = { seedreamKey = it },
+                        label = "API Key",
+                        placeholder = "ark-..."
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(16.dp))
 
             // 统一保存按钮
             Button(
                 onClick = {
-                    // 上方 API Key 同步给 Kimi
                     viewModel.saveKimiKey(apiKey)
                     viewModel.saveApiConfig()
-                    viewModel.saveSeedreamKey(seedreamKey)
+                    viewModel.saveSeedreamConfig(seedreamKey, seedreamUrl, seedreamModel)
                     showSavedAnimation = true
                 },
                 modifier = Modifier.fillMaxWidth(),
@@ -211,7 +232,7 @@ fun SettingsScreen(
                 )
             }
 
-            Divider(
+            HorizontalDivider(
                 modifier = Modifier.padding(vertical = 10.dp),
                 color = MaterialTheme.colorScheme.outlineVariant
             )
@@ -288,12 +309,15 @@ fun SettingsScreen(
                         ) {
                             // 缩略图 + 删除按钮
                             Box(modifier = Modifier.size(64.dp)) {
-                                androidx.compose.foundation.Image(
-                                    bitmap = bmp.asImageBitmap(),
-                                    contentDescription = "参考图${idx + 1}",
-                                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)),
-                                    contentScale = ContentScale.Crop
-                                )
+                                val safeBmp = runCatching { bmp.asImageBitmap() }.getOrNull()
+                                if (safeBmp != null) {
+                                    androidx.compose.foundation.Image(
+                                        bitmap = safeBmp,
+                                        contentDescription = "参考图${idx + 1}",
+                                        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                }
                                 // 删除按钮: 用 Box+clickable 替代 IconButton，消除 48dp 最小触摸区和阴影
                                 Box(
                                     modifier = Modifier

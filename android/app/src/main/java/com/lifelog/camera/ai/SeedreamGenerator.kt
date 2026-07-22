@@ -33,36 +33,69 @@ import javax.inject.Singleton
 class SeedreamGenerator @Inject constructor(
     private val apiPreferences: ApiPreferences
 ) {
+    /** 参考图类型 */
+    enum class RefType(val label: String) {
+        CHARACTER("角色参考"),   // 人物形象（正面/标准照）
+        CHARACTER_ALT("多角度"), // 同一角色的其他角度
+        POSE("姿态参考"),        // 目标姿态/动作
+        STYLE("画风参考"),       // 色彩/笔触/光影风格
+        GENERAL("整体参考")      // 构图/氛围
+    }
+
     companion object {
         private const val TAG = "SeedreamGen"
-        private const val BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
-        private const val MODEL = "doubao-seedream-5-0-260128"
         private const val TIMEOUT_SEC = 300L
 
         /**
-         * Seedream 融合 Prompt 模板 (中文, 有参考图模式)
+         * Seedream 融合 Prompt 模板
          *
-         * 遵循 Seedream 4.0 官方指南:
-         *   - 自然语言描述 主体+行为+环境
-         *   - 简洁精确优于堆砌词汇
-         *   - 明确参考对象
+         * 图序约定 (API image[] 数组):
+         *   image[0] = 场景底图 (图1)
+         *   image[1:] = 各类参考图 (图2, 图3, ...)
          *
-         * 注意: Seedream 5.0 不支持 negative_prompt —
-         *   黑边/塑料感约束已全部正面化融入本模板
+         * 官方 prompt 范式: "将图1的xxx换为图2的xxx"
+         * {ref_desc} 由 buildRefDescription() 根据参考图类型动态生成
          */
         val SEEDREAM_PROMPT_TEMPLATE =
-            "将角色自然地呈现在这张场景照片中，{position_desc}，{interaction_desc}。" +
-            "角色与场景共享相同的光线环境，自然光的方向、强度与色温保持一致，脚下带有柔和投影。" +
-            "人物轮廓由自然光线柔和勾勒，边缘像素与周围场景像素平滑过渡，如同原生照片中的景深虚化，" +
-            "无任何可见接缝、分界线、黑边或描边痕迹。" +
-            "肤色与服装色调融入场景的色彩氛围，保留皮肤纹理与面料质感的真实细节。" +
-            "人物全身可见，双脚踏实地面，比例符合场景透视。" +
-            "真实摄影风格，仿佛随手抓拍的生活照片。"
+            "写实摄影风格，{interaction_desc}。" +
+            "将人物放置在黄色圆点处。" +
+            "场景采用自然侧逆光为主光源，搭配柔和的体积光效果，" +
+            "空气中悬浮着细微的尘埃粒子与漫射光晕，营造出通透的散射质感。" +
+            "人物皮肤呈现真实的哑光肌理，带有细密的毛孔与自然肤色过渡；" +
+            "衣物面料展现清晰的织物纹理、自然的褶皱与粗糙度。" +
+            "光影边缘干净锐利，明暗交界线明确，无模糊揉合；" +
+            "整体采用电影级调色，高动态范围，暗部保留丰富细节，高光区域呈柔和衰减。" +
+            "最终画面呈现出照片级的真实感与临场氛围。"
 
-        fun buildSeedreamPrompt(positionDesc: String, interactionDesc: String): String {
+        /** 根据参考图列表构建图序描述 */
+        fun buildRefDescription(refs: List<Pair<RefType, Int>>): String {
+            if (refs.isEmpty()) return "以参考图中的人物为参考人物，重绘图片图1"
+
+            val parts = mutableListOf<String>()
+            for ((type, imgNum) in refs) {
+                val imgRef = "图${imgNum}"
+                when (type) {
+                    RefType.CHARACTER     -> parts.add("以${imgRef}中的人物为参考人物")
+                    RefType.CHARACTER_ALT -> {}
+                    RefType.POSE          -> parts.add("以${imgRef}为姿态参考")
+                    RefType.STYLE         -> parts.add("以${imgRef}为画风参考")
+                    RefType.GENERAL       -> parts.add("参考${imgRef}的整体构图与氛围")
+                }
+            }
+            val hasAlt = refs.any { it.first == RefType.CHARACTER_ALT }
+            val desc = parts.joinToString("，")
+            return if (hasAlt) "${desc}，结合多角度参考确保角色形象一致" else desc
+        }
+
+        fun buildSeedreamPrompt(
+            interactionDesc: String,
+            refDesc: String = ""
+        ): String {
+            val action = interactionDesc.ifBlank { "自然站立，面朝前方" }
+            val ref = refDesc.ifBlank { "以参考图中的人物为参考人物，重绘图片图1" }
             return SEEDREAM_PROMPT_TEMPLATE
-                .replace("{position_desc}", positionDesc)
-                .replace("{interaction_desc}", interactionDesc.ifBlank { "自然站立，面朝前方，带着温柔的微笑" })
+                .replace("{ref_desc}", ref)
+                .replace("{interaction_desc}", action)
         }
     }
 
@@ -76,46 +109,45 @@ class SeedreamGenerator @Inject constructor(
      * 多图融合生成
      *
      * @param scenePath 场景图本地路径
-     * @param referencePaths 角色参考图本地路径列表
-     * @param positionDesc 位置描述 (中文) 如 "画面右侧键盘旁"
-     * @param interactionDesc 交互描述 (中文) 如 "身体微微前倾，探头看向杯子"
-     * @param referenceHint 参考图分类说明 (可选) 如 "参考图中包含：角色参考2张、画风参考1张"
+     * @param references 参考图列表: Pair(本地路径, 参考类型)
+     * @param positionDesc 位置描述 (中文)
+     * @param interactionDesc 交互描述 (中文)
      * @param customPrompt 自定义完整 prompt (可选, 覆盖自动构建)
      * @param size 输出尺寸 "2k" / "3k" / "4k"
      * @return 生成结果图片 URL
      */
     suspend fun generate(
         scenePath: String,
-        referencePaths: List<String>,
-        positionDesc: String,
+        references: List<Pair<String, RefType>>,
+        @Suppress("UNUSED_PARAMETER") positionDesc: String,
         interactionDesc: String = "",
-        referenceHint: String = "",
         customPrompt: String? = null,
         size: String = "2k"
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
-            val seedreamKey = apiPreferences.getSeedreamApiKey()
-            if (seedreamKey.isBlank()) return@withContext Result.failure(Exception("请先配置 Seedream API Key"))
+            val cfg = apiPreferences.getSeedreamConfig()
+            if (cfg.apiKey.isBlank()) return@withContext Result.failure(Exception("请先配置 Seedream API Key"))
 
-            // 构建 prompt (参考图说明 + 融合指令)
-            val prompt = customPrompt ?: buildSeedreamPrompt(positionDesc, interactionDesc)
-            val fullPrompt = if (referenceHint.isNotBlank()) {
-                "$referenceHint$prompt"
-            } else prompt
-
-            CrashLogger.i(TAG, "Seedream 多图融合... 场景=1 参考=${referencePaths.size}")
-
-            // 组装 image 数组
-            val images = JSONArray().apply {
-                put(imageFileToBase64(File(scenePath)))
-                for (ref in referencePaths) {
-                    put(imageFileToBase64(File(ref)))
+            // 组装 image 数组（仅保留存在的文件，同步记录实际的图序）
+            val images = JSONArray().apply { put(imageFileToBase64(File(scenePath))) }
+            val actualRefs = mutableListOf<Pair<SeedreamGenerator.RefType, Int>>()
+            for ((path, type) in references) {
+                val b64 = imageFileToBase64(File(path))
+                if (b64.isNotEmpty()) {
+                    images.put(b64)
+                    // image[0]=图1(场景), image[images.length()-1]=图N(参考)
+                    actualRefs.add(type to images.length() - 1 + 1)  // +1 转 1-based
                 }
             }
 
+            // 用实际存在的参考图构建 prompt（图序与 JSON 数组严格对齐）
+            val refDesc = buildRefDescription(actualRefs)
+            val prompt = customPrompt ?: buildSeedreamPrompt(interactionDesc, refDesc)
+            CrashLogger.i(TAG, "Seedream 生成: model=${cfg.model}, 参考=${actualRefs.size}/${references.size}张")
+
             val body = JSONObject().apply {
-                put("model", MODEL)
-                put("prompt", fullPrompt)
+                put("model", cfg.model)
+                put("prompt", prompt)
                 put("size", size)
                 put("response_format", "url")
                 put("image", images)
@@ -123,7 +155,7 @@ class SeedreamGenerator @Inject constructor(
                 put("sequential_image_generation", "disabled")
             }
 
-            val response = callApi(seedreamKey, body)
+            val response = callApi(cfg, body)
             val respJson = JSONObject(response)
             val url = respJson.getJSONArray("data")
                 .getJSONObject(0)
@@ -141,44 +173,66 @@ class SeedreamGenerator @Inject constructor(
     // ── 内部 ──
 
     private fun imageFileToBase64(file: File): String {
-        // Seedream 推荐 JPEG; PNG 可能导致 UnsupportedImageFormat
-        val bytes = if (file.extension.lowercase() == "png") {
-            // PNG → JPEG 转换
-            val bmp = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
-                ?: throw Exception("无法解码图片: ${file.name}")
-            val bos = java.io.ByteArrayOutputStream()
-
-            // PNG 有透明通道时，先绘制到白色背景上再压 JPEG
-            // 否则透明区域变黑色，导致 Seedream 生成的人物出现黑边/黑影
-            if (bmp.hasAlpha()) {
-                val solidBmp = android.graphics.Bitmap.createBitmap(
-                    bmp.width, bmp.height, android.graphics.Bitmap.Config.ARGB_8888
-                )
-                val canvas = android.graphics.Canvas(solidBmp)
-                canvas.drawColor(android.graphics.Color.WHITE)
-                canvas.drawBitmap(bmp, 0f, 0f, null)
-                bmp.recycle()
-                solidBmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, bos)
-                solidBmp.recycle()
-            } else {
-                bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, bos)
-                bmp.recycle()
-            }
-            bos.toByteArray()
-        } else {
-            file.readBytes()
+        if (!file.exists()) {
+            CrashLogger.w(TAG, "图片不存在，跳过: ${file.name}")
+            return ""
         }
-        return "data:image/jpeg;base64,${Base64.encodeToString(bytes, Base64.NO_WRAP)}"
+
+        // 参考图 PNG 直接传原始格式（保留 alpha 通道和完整色彩，匹配网页版效果）
+        val isRefPng = file.extension.lowercase() == "png"
+        if (isRefPng) {
+            var bmp = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+            if (bmp == null) {
+                CrashLogger.w(TAG, "图片损坏无法解码，跳过: ${file.name}")
+                return ""
+            }
+            // 仅缩放超尺寸图片，不做格式转换（保留 PNG 质量）
+            val maxDim = 3000
+            if (bmp.width > maxDim || bmp.height > maxDim) {
+                val ratio = if (bmp.width >= bmp.height) maxDim.toFloat() / bmp.width
+                            else maxDim.toFloat() / bmp.height
+                val scaled = android.graphics.Bitmap.createScaledBitmap(
+                    bmp, (bmp.width * ratio).toInt(), (bmp.height * ratio).toInt(), true)
+                bmp.recycle()
+                bmp = scaled
+            }
+            val bos = java.io.ByteArrayOutputStream()
+            bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, bos)
+            bmp.recycle()
+            val bytes = bos.toByteArray()
+            CrashLogger.i(TAG, "参考图 PNG: ${bmp.width}x${bmp.height}, ${bytes.size / 1024}KB")
+            return "data:image/png;base64,${Base64.encodeToString(bytes, Base64.NO_WRAP)}"
+        }
+
+        // 场景图等非 PNG → JPEG（Seedream 对 JPEG 兼容性最好）
+        var bmp = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+        if (bmp == null) {
+            CrashLogger.w(TAG, "图片无法解码，跳过: ${file.name}")
+            return ""
+        }
+        val maxDim = 3000
+        if (bmp.width > maxDim || bmp.height > maxDim) {
+            val ratio = if (bmp.width >= bmp.height) maxDim.toFloat() / bmp.width
+                        else maxDim.toFloat() / bmp.height
+            val scaled = android.graphics.Bitmap.createScaledBitmap(
+                bmp, (bmp.width * ratio).toInt(), (bmp.height * ratio).toInt(), true)
+            bmp.recycle()
+            bmp = scaled
+        }
+        val bos = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, bos)
+        bmp.recycle()
+        return "data:image/jpeg;base64,${Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP)}"
     }
 
-    private fun callApi(apiKey: String, body: JSONObject): String {
-        val url = "${BASE_URL.trimEnd('/')}/images/generations"
+    private fun callApi(cfg: AIClient.ApiConfig, body: JSONObject): String {
+        val url = "${cfg.baseUrl.trimEnd('/')}/images/generations"
         val mediaType = "application/json; charset=utf-8".toMediaType()
         val requestBody = body.toString().toRequestBody(mediaType)
 
         val request = Request.Builder()
             .url(url)
-            .addHeader("Authorization", "Bearer $apiKey")
+            .addHeader("Authorization", "Bearer ${cfg.apiKey}")
             .addHeader("Content-Type", "application/json")
             .post(requestBody)
             .build()

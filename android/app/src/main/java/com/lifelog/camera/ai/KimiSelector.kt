@@ -75,7 +75,7 @@ class KimiSelector @Inject constructor(
                         })
                     })
                 })
-                put("max_tokens", 800)
+                put("max_tokens", 4096)  // 20 候选 × ~150 tokens/评估
                 put("temperature", 0.6)
                 put("thinking", JSONObject().apply {
                     put("type", "disabled")
@@ -140,19 +140,6 @@ class KimiSelector @Inject constructor(
 
             val obj = JSONObject(jsonStr)
 
-            val evaluations = mutableListOf<CandidateEvaluation>()
-            val evalsArr = obj.optJSONArray("evaluations")
-            if (evalsArr != null) {
-                for (i in 0 until evalsArr.length()) {
-                    val e = evalsArr.getJSONObject(i)
-                    evaluations.add(CandidateEvaluation(
-                        id = e.getInt("id"),
-                        score = e.getDouble("score"),
-                        reason = e.optString("reason", "")
-                    ))
-                }
-            }
-
             val interObj = obj.optJSONObject("selected_interaction")
             val interaction = if (interObj != null) SelectedInteraction(
                 obj = interObj.optString("object", ""),
@@ -165,13 +152,8 @@ class KimiSelector @Inject constructor(
             KimiSelection(
                 bestCandidateId = obj.optInt("best_candidate_id", 1),
                 selectedInteraction = interaction,
-                personFacing = obj.optString("person_facing", "toward_camera"),
-                lightDirection = obj.optString("light_direction", ""),
                 confidence = obj.optDouble("confidence", 0.5).toFloat(),
-                evaluations = evaluations,
-                warnings = obj.optJSONArray("warnings")?.let { arr ->
-                    (0 until arr.length()).map { arr.getString(it) }
-                } ?: emptyList(),
+                evaluations = emptyList(),
                 rawResponse = content
             )
         } catch (e: Exception) {
@@ -231,53 +213,27 @@ class KimiSelector @Inject constructor(
         private const val TIMEOUT_SEC = 180L
 
         val DEFAULT_SELECTION_PROMPT = """
-你是一位摄影构图助手和虚拟陪伴角色的"行为导演"。
+你是一位摄影构图助手。从标注图中选出最佳候选位置并为角色设计互动动作。
 
-这张标注图是在原图上叠加了分割信息：
-- 红色半透明 = 必须避开的人物/障碍物
-- 蓝色方框 = 可互动的物体（杯子、书本、电脑等）
-- 绿色半透明 = 地面/可站立区域
-- 黄色圆点+编号 = 候选插入位置
+标注图说明：红色=障碍物，蓝色=可互动物体，黄色圆点+编号=候选位置。
+候选详情：{candidate_json}
 
-以下结构化数据补充了每个候选的详细信息：
-{candidate_json}
+任务：直接选出最佳候选。综合考虑位置自然度、互动机会、遮挡、光照、构图。
+只输出最佳结果，不要逐一评估。
 
-请完成以下任务：
-
-1. **逐一审视**每个候选位置，综合考虑：
-   - 位置自然度：角色站在这里是否合理？
-   - 互动机会：附近有可互动的物体吗？互动是否自然、有陪伴感？
-   - 遮挡风险：角色是否会被前景物体遮挡？
-   - 光照方向：从场景光线推测，该位置是顺光/侧光/逆光？
-   - 构图平衡：角色放在这里后整体画面是否平衡？
-
-2. 如果候选附近有可互动物体，为角色选择一个**最自然、最有陪伴感**的互动动作。
-
-3. 选出最佳候选，如果全部不合适返回 -1。
-
-严格按以下 JSON 格式输出（不要 markdown 代码块）：
+严格按以下 JSON 输出（不含 markdown 代码块）：
 {
-  "evaluations": [
-    {"id": 1, "score": 4, "reason": "..."},
-    {"id": 2, "score": 2, "reason": "..."}
-  ],
   "best_candidate_id": 1,
+  "reason": "一句话说明为什么选这个位置",
   "selected_interaction": {
-    "object": "杯子",
-    "detailed_description": "身体微微前倾，双手轻轻撑在桌边，探头好奇地看着桌上的杯子，嘴角带着温柔的笑意，仿佛在等用户喝水",
-    "pose": "leaning_forward",
-    "facing": "toward_right",
-    "gaze_target": "水杯"
+    "object": "物体名",
+    "detailed_description": "只描述人物动作姿态，不加情感修饰。例如：人物背对镜头，侧身坐在桌面上，身体前倾，凝视前方的电脑屏幕",
+    "pose": "standing或leaning_forward或sitting",
+    "facing": "toward_left或toward_right或forward",
+    "gaze_target": "视线目标物体"
   },
-  "person_facing": "toward_left",
-  "confidence": 0.85,
-  "warnings": []
+  "confidence": 0.85
 }
-
-评分标准 (1-5分):
-- 5分: 完美位置，自然且可与物体互动
-- 3分: 可接受，但不够理想
-- 1分: 不合适，应避免
         """.trimIndent()
     }
 }
